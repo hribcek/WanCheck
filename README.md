@@ -2,9 +2,9 @@
 
 A lightweight, persistent WAN-connection monitoring script for
 **Asuswrt-Merlin** routers. It pings a configurable target to detect
-outages and keeps one or more NVRAM variables (e.g. `wanduck_state`)
-accurately reflecting the WAN status — surviving reboots thanks to the
-router's JFFS2 persistent partition.
+outages and keeps the two main NVRAM state variables (`wanduck_state` and
+`link_internet`) accurately reflecting the WAN status — surviving reboots
+thanks to the router's JFFS2 persistent partition.
 
 ---
 
@@ -14,7 +14,7 @@ router's JFFS2 persistent partition.
 |---|---|
 | **Accurate state tracking** | NVRAM is only set to DOWN after a configurable silence threshold, preventing false alarms from brief transient blips |
 | **Fast-polling during outages** | Switches to a tight check loop (default every 5 s) so recovery is detected and NVRAM is restored quickly |
-| **Configurable NVRAM targets** | Primary variable (`wanduck_state`) plus an arbitrary list of extra variables, each optionally with their own UP/DOWN integer values |
+| **Two primary NVRAM variables** | Manages both `wanduck_state` and `link_internet` by default, plus an arbitrary list of extra variables each with optional per-variable UP/DOWN values |
 | **Lock file** | Prevents multiple overlapping cron invocations |
 | **Log rotation** | Keeps `/tmp/wancheck.log` under a configurable size cap |
 | **One-command install** | `install.sh` copies the script, sets up cron, and wires the cron entry into `services-start` for persistence |
@@ -87,7 +87,8 @@ block at the top of `wancheck.sh`.
 | `PING_TARGET` | `8.8.8.8` | IP or hostname pinged to verify WAN connectivity |
 | `PING_COUNT` | `3` | ICMP packets sent per check |
 | `PING_TIMEOUT` | `3` | Seconds to wait per packet |
-| `NVRAM_VAR` | `wanduck_state` | Primary NVRAM variable to manage |
+| `NVRAM_VAR` | `wanduck_state` | First primary NVRAM variable to manage |
+| `NVRAM_VAR2` | `link_internet` | Second primary NVRAM variable to manage (set to `""` to disable) |
 | `STATE_UP` | `2` | Integer value written when WAN is UP |
 | `STATE_DOWN` | `0` | Integer value written when WAN is DOWN |
 | `EXTRA_NVRAM_VARS` | *(empty)* | Space-separated extra variables — see below |
@@ -172,7 +173,8 @@ DOWN timestamp is cleared and the NVRAM variables are restored to `STATE_UP`.
 
 | Variable | UP value | DOWN value | Notes |
 |---|---|---|---|
-| `wanduck_state` | `2` | `0` | Primary WAN duck state |
+| `wanduck_state` | `2` | `0` | Primary WAN duck state (`NVRAM_VAR`) |
+| `link_internet` | `2` | `0` | Internet link status (`NVRAM_VAR2`) |
 | `wan0_state_t` | `2` | `0` | WAN0 interface state |
 | `wan1_state_t` | `2` | `0` | WAN1 interface state (dual-WAN) |
 

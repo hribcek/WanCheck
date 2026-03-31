@@ -4,7 +4,7 @@
 # wancheck.sh — WAN Connection Monitor for Asuswrt-Merlin
 # =============================================================================
 # Monitors WAN connectivity by pinging a configurable target and keeps
-# NVRAM state variables (wanduck_state + any extras) in sync.
+# NVRAM state variables (wanduck_state, link_internet, + any extras) in sync.
 #
 # Intended deployment:  /jffs/scripts/wancheck.sh
 # Cron schedule (normal): every 5 minutes via the Merlin cru helper
@@ -30,6 +30,10 @@ PING_TIMEOUT="${PING_TIMEOUT:-3}"
 
 # Primary NVRAM variable whose value reflects WAN status
 NVRAM_VAR="${NVRAM_VAR:-wanduck_state}"
+
+# Second primary NVRAM variable that also reflects WAN/internet status.
+# Set to an empty string to disable management of this variable.
+NVRAM_VAR2="${NVRAM_VAR2:-link_internet}"
 
 # NVRAM integer value that represents the connected (UP) state
 STATE_UP="${STATE_UP:-2}"
@@ -124,9 +128,10 @@ nvram_set_val() {
     nvram commit 2>/dev/null
 }
 
-# Write the primary NVRAM variable and any extras with the given state value.
-# For extra variables that specify their own up/down values the appropriate
-# per-variable value is used; otherwise STATE_UP / STATE_DOWN is used.
+# Write the primary NVRAM variables (wanduck_state + link_internet) and any
+# extras with the given state value.  For extra variables that specify their
+# own up/down values the appropriate per-variable value is used; otherwise
+# STATE_UP / STATE_DOWN is used.
 set_nvram_state() {
     local target_state="$1"   # "UP" or "DOWN"
     local primary_val
@@ -138,14 +143,24 @@ set_nvram_state() {
     fi
 
     local current
-    current="$(nvram_get_val "$NVRAM_VAR")"
 
+    # ---- NVRAM_VAR (wanduck_state) ----
+    current="$(nvram_get_val "$NVRAM_VAR")"
     if [ "$current" != "$primary_val" ]; then
         log_info "Setting NVRAM ${NVRAM_VAR}=${primary_val} (was ${current})"
         nvram_set_val "$NVRAM_VAR" "$primary_val"
     fi
 
-    # Handle extra variables
+    # ---- NVRAM_VAR2 (link_internet) — skip if empty ----
+    if [ -n "$NVRAM_VAR2" ]; then
+        current="$(nvram_get_val "$NVRAM_VAR2")"
+        if [ "$current" != "$primary_val" ]; then
+            log_info "Setting NVRAM ${NVRAM_VAR2}=${primary_val} (was ${current})"
+            nvram_set_val "$NVRAM_VAR2" "$primary_val"
+        fi
+    fi
+
+    # ---- Extra variables ----
     for entry in $EXTRA_NVRAM_VARS; do
         local var up_val down_val val
         var="${entry%%:*}"
@@ -231,7 +246,7 @@ main() {
     trap 'release_lock' EXIT INT TERM
 
     log_info "=== WanCheck starting (PID $$) ==="
-    log_info "Target: ${PING_TARGET}, NVRAM var: ${NVRAM_VAR}, UP=${STATE_UP}, DOWN=${STATE_DOWN}"
+    log_info "Target: ${PING_TARGET}, NVRAM vars: ${NVRAM_VAR}, ${NVRAM_VAR2}, UP=${STATE_UP}, DOWN=${STATE_DOWN}"
 
     if wan_is_up; then
         # ----- WAN is UP on entry -----

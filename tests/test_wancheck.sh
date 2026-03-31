@@ -141,16 +141,17 @@ run() {
 }
 
 # =============================================================================
-# Test 1: WAN UP on first check → NVRAM set to STATE_UP (2)
+# Test 1: WAN UP on first check → both wanduck_state and link_internet set
 # =============================================================================
 echo ""
 echo "=== Test 1: WAN UP on entry ==="
 T="$(mktemp -d)"
 make_stubs "$T" "0" "1000"
 run "$T"
-assert_equals     "wanduck_state=2"  "2" "$(nvram_val "$T" wanduck_state)"
-assert_log_contains "log: WAN UP"    "WAN UP"   "${T}/wancheck.log"
-assert_file_absent  "lock removed"   "${T}/wancheck.lock"
+assert_equals     "wanduck_state=2"   "2" "$(nvram_val "$T" wanduck_state)"
+assert_equals     "link_internet=2"   "2" "$(nvram_val "$T" link_internet)"
+assert_log_contains "log: WAN UP"     "WAN UP"   "${T}/wancheck.log"
+assert_file_absent  "lock removed"    "${T}/wancheck.lock"
 rm -rf "$T"
 
 # =============================================================================
@@ -181,6 +182,7 @@ run "$T"
 assert_log_contains "log: threshold exceeded"  "Outage exceeded"  "${T}/wancheck.log"
 assert_log_contains "log: WAN recovered"       "WAN recovered"    "${T}/wancheck.log"
 assert_equals       "wanduck_state=2 after recovery" "2" "$(nvram_val "$T" wanduck_state)"
+assert_equals       "link_internet=2 after recovery" "2" "$(nvram_val "$T" link_internet)"
 rm -rf "$T"
 
 # =============================================================================
