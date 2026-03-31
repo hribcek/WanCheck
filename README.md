@@ -13,10 +13,11 @@ thanks to the router's JFFS2 persistent partition.
 | Feature | Detail |
 |---|---|
 | **Accurate state tracking** | NVRAM is only set to DOWN after a configurable silence threshold, preventing false alarms from brief transient blips |
-| **Fast-polling during outages** | Switches to a tight check loop (default every 5 s) so recovery is detected and NVRAM is restored quickly |
+| **Fast-polling during outages** | Switches to a tight check loop (default every 10 s) so recovery is detected and NVRAM is restored quickly |
 | **Two primary NVRAM variables** | Manages both `wanduck_state` and `link_internet` by default, plus an arbitrary list of extra variables each with optional per-variable UP/DOWN values |
+| **wanduck awareness** | Detects if the `wanduck` daemon is running and defers to it, avoiding conflicting NVRAM writes |
 | **Lock file** | Prevents multiple overlapping cron invocations |
-| **Log rotation** | Keeps `/tmp/wancheck.log` under a configurable size cap |
+| **Syslog integration** | All messages are written to syslog via BusyBox `logger` — readable with `logread` |
 | **One-command install** | `install.sh` copies the script, sets up cron, and wires the cron entry into `services-start` for persistence |
 
 ---
@@ -60,12 +61,13 @@ sh install.sh
 # Confirm cron entry
 crontab -l | grep wancheck
 
-# Run once manually and tail the log
+# Run once manually and watch syslog
 sh /jffs/scripts/wancheck.sh
-tail -f /tmp/wancheck.log
+logread | grep wancheck
 
-# Check the NVRAM variable
+# Check the NVRAM variables
 nvram get wanduck_state
+nvram get link_internet
 ```
 
 ### Uninstall
@@ -84,7 +86,7 @@ block at the top of `wancheck.sh`.
 
 | Variable | Default | Description |
 |---|---|---|
-| `PING_TARGET` | `8.8.8.8` | IP or hostname pinged to verify WAN connectivity |
+| `PING_TARGET` | `1.0.0.1` | IP or hostname pinged to verify WAN connectivity |
 | `PING_COUNT` | `3` | ICMP packets sent per check |
 | `PING_TIMEOUT` | `3` | Seconds to wait per packet |
 | `NVRAM_VAR` | `wanduck_state` | First primary NVRAM variable to manage |
@@ -92,9 +94,8 @@ block at the top of `wancheck.sh`.
 | `STATE_UP` | `2` | Integer value written when WAN is UP |
 | `STATE_DOWN` | `0` | Integer value written when WAN is DOWN |
 | `EXTRA_NVRAM_VARS` | *(empty)* | Space-separated extra variables — see below |
-| `DOWN_THRESHOLD` | `30` | Seconds of continuous failure before DOWN is committed |
-| `FAST_POLL_INTERVAL` | `5` | Seconds between checks in fast-polling (outage) mode |
-| `LOG_MAX_BYTES` | `262144` | Log file size cap (bytes) before rotation (256 KB) |
+| `DOWN_THRESHOLD` | `60` | Seconds of continuous failure before DOWN is committed |
+| `FAST_POLL_INTERVAL` | `10` | Seconds between checks in fast-polling (outage) mode |
 
 ### Extra NVRAM variables
 
@@ -130,6 +131,8 @@ cron (every N min)
       │
       └─► wancheck.sh
               │
+              ├─ wanduck running? ──► yes → log to syslog, exit immediately
+              │
               ├─ acquire lock  (/tmp/wancheck.lock)
               │
               ├─ ping PING_TARGET
@@ -162,10 +165,11 @@ DOWN timestamp is cleared and the NVRAM variables are restored to `STATE_UP`.
     └── services-start       ← boot hook (cron registration appended here)
 
 /tmp/
-├── wancheck.log             ← rolling log (rotated at LOG_MAX_BYTES)
 ├── wancheck.lock            ← PID lock file (auto-removed on exit)
 └── wancheck_down_since      ← outage start epoch (auto-removed on recovery)
 ```
+
+All log messages are written to syslog — use `logread | grep wancheck` to view them.
 
 ---
 
