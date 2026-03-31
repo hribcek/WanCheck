@@ -212,6 +212,15 @@ set_nvram_state() {
 }
 
 # ---------------------------------------------------------------------------
+# Daemon check — yield to wanduck if it is managing WAN state
+# ---------------------------------------------------------------------------
+
+# Returns 0 (true) if the wanduck daemon process is currently running.
+wanduck_is_running() {
+  pidof wanduck > /dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
 # Connectivity check
 # ---------------------------------------------------------------------------
 
@@ -266,6 +275,13 @@ down_threshold_exceeded() {
 # ---------------------------------------------------------------------------
 
 main() {
+  # If the wanduck daemon is already running it manages WAN state natively.
+  # Defer to it and exit immediately to avoid conflicting NVRAM writes.
+  if wanduck_is_running ; then
+    log_info "wanduck daemon is running — deferring to daemon. Exiting."
+    exit 0
+  fi
+
   acquire_lock
   trap 'release_lock' EXIT INT TERM
 

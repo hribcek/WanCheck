@@ -115,6 +115,22 @@ STUB
   # sleep stub (instant)
   printf '#!/bin/sh\nexit 0\n' > "${td}/bin/sleep"
   chmod +x "${td}/bin/sleep"
+
+  # pidof stub — returns the contents of ${td}/pidof_wanduck when queried
+  # for "wanduck"; file absent means the process is not running (exit 1).
+  cat > "${td}/bin/pidof" << STUB
+#!/bin/sh
+if [ "\$1" = "wanduck" ]; then
+  file="${td}/pidof_wanduck"
+  if [ -f "\$file" ]; then
+    cat "\$file"
+    exit 0
+  fi
+  exit 1
+fi
+exit 1
+STUB
+  chmod +x "${td}/bin/pidof"
 }
 
 nvram_val() { grep "^${2}=" "${1}/nvram_store/vars" 2>/dev/null | cut -d= -f2- || true; }
@@ -209,6 +225,21 @@ echo $$ > "${T}/wancheck.lock"          # simulate already-running instance
 run "$T" || true                        # should exit 0 early (not an error)
 assert_log_contains "log: another instance warning" \
   "Another instance" "${T}/wancheck.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 6: wanduck daemon running → script logs and exits immediately
+# =============================================================================
+echo ""
+echo "=== Test 6: wanduck running — script defers and exits ==="
+T="$(mktemp -d)"
+make_stubs "$T" "0" "1000"
+echo "1234" > "${T}/pidof_wanduck"   # simulate wanduck PID
+run "$T" || true
+assert_log_contains "log: wanduck running" \
+  "wanduck daemon is running" "${T}/wancheck.log"
+# wanduck_state must NOT be written (no nvram activity expected)
+assert_equals "wanduck_state not written" "" "$(nvram_val "$T" wanduck_state)"
 rm -rf "$T"
 
 # =============================================================================
