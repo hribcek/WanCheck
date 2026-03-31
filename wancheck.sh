@@ -48,10 +48,10 @@ STATE_DOWN="${STATE_DOWN:-0}"
 EXTRA_NVRAM_VARS="${EXTRA_NVRAM_VARS:-}"
 
 # Seconds a WAN outage must persist before STATE_DOWN is written to NVRAM
-DOWN_THRESHOLD="${DOWN_THRESHOLD:-30}"
+DOWN_THRESHOLD="${DOWN_THRESHOLD:-60}"
 
 # Seconds between connectivity checks while in fast-polling (outage) mode
-FAST_POLL_INTERVAL="${FAST_POLL_INTERVAL:-5}"
+FAST_POLL_INTERVAL="${FAST_POLL_INTERVAL:-10}"
 
 # ---------------------------------------------------------------------------
 # Internal constants — normally no need to change these
@@ -60,36 +60,14 @@ FAST_POLL_INTERVAL="${FAST_POLL_INTERVAL:-5}"
 SCRIPT_NAME="wancheck"
 LOCK_FILE="${LOCK_FILE:-/tmp/${SCRIPT_NAME}.lock}"
 STATE_FILE="${STATE_FILE:-/tmp/${SCRIPT_NAME}_down_since}"
-LOG_FILE="${LOG_FILE:-/tmp/${SCRIPT_NAME}.log}"
-
-# Maximum log size in bytes before the log is rotated (default 256 KB)
-LOG_MAX_BYTES="${LOG_MAX_BYTES:-262144}"
 
 # ---------------------------------------------------------------------------
-# Logging helpers
+# Logging helpers — write to syslog via BusyBox logger
 # ---------------------------------------------------------------------------
 
-_log() {
-  local level="$1"
-  shift
-  local ts
-  ts="$(date '+%Y-%m-%d %H:%M:%S.%3N')"
-
-  # Rotate log if it exceeds LOG_MAX_BYTES
-  if [ -f "$LOG_FILE" ] ; then
-    local size
-    size="$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)"
-    if [ "$size" -ge "$LOG_MAX_BYTES" ] ; then
-      mv "$LOG_FILE" "${LOG_FILE}.1"
-    fi
-  fi
-
-  printf '[%s] (%s) %s\n' "$ts" "$level" "$*" >> "$LOG_FILE"
-}
-
-log_info()  { _log "INFO " "$@"; }
-log_warn()  { _log "WARN " "$@"; }
-log_error() { _log "ERROR" "$@"; }
+log_info()  { logger -t "$SCRIPT_NAME" -p daemon.info  "$*"; }
+log_warn()  { logger -t "$SCRIPT_NAME" -p daemon.warn  "$*"; }
+log_error() { logger -t "$SCRIPT_NAME" -p daemon.err   "$*"; }
 
 # ---------------------------------------------------------------------------
 # Lock helpers — prevent overlapping cron invocations

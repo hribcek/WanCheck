@@ -131,6 +131,25 @@ fi
 exit 1
 STUB
   chmod +x "${td}/bin/pidof"
+
+  # logger stub — captures syslog output to LOG_FILE for test assertions.
+  # Parses -t TAG and -p PRIO flags; remaining arguments form the message.
+  cat > "${td}/bin/logger" << STUB
+#!/bin/sh
+_tag=""; _prio=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -t) _tag="\$2"; shift 2 ;;
+    -p) _prio="\$2"; shift 2 ;;
+    -s|-c) shift ;;
+    --) shift; break ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+printf '[%s] %s: %s\n' "\$_prio" "\$_tag" "\$*" >> "\${LOG_FILE:-${td}/wancheck.log}"
+STUB
+  chmod +x "${td}/bin/logger"
 }
 
 nvram_val() { grep "^${2}=" "${1}/nvram_store/vars" 2>/dev/null | cut -d= -f2- || true; }
