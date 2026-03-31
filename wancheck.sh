@@ -65,6 +65,7 @@ STATE_FILE="${STATE_FILE:-/tmp/${SCRIPT_NAME}_down_since}"
 # Logging helpers — write to syslog via BusyBox logger
 # ---------------------------------------------------------------------------
 
+log_debug() { logger -t "$SCRIPT_NAME" -p daemon.debug "$*"; }
 log_info()  { logger -t "$SCRIPT_NAME" -p daemon.info  "$*"; }
 log_warn()  { logger -t "$SCRIPT_NAME" -p daemon.warn  "$*"; }
 log_error() { logger -t "$SCRIPT_NAME" -p daemon.err   "$*"; }
@@ -121,70 +122,79 @@ nvram_commit() {
 # own up/down values the appropriate per-variable value is used; otherwise
 # STATE_UP / STATE_DOWN is used.
 set_nvram_state() {
-  local target_state="$1"   # "UP" or "DOWN"
+  # Usage: set_nvram_state <UP|DOWN>
+  local target_state="$1"
   local primary_val
 
-  if [ "$target_state" = "UP" ]; then
-    primary_val="$STATE_UP"
-  else
-    primary_val="$STATE_DOWN"
-  fi
+  case "$target_state" in
+    UP)
+      primary_val="$STATE_UP"
+      ;;
+    DOWN)
+      primary_val="$STATE_DOWN"
+      ;;
+    *)
+      log_error "Invalid target_state '$target_state' in set_nvram_state. Must be 'UP' or 'DOWN'."
+      return 1
+      ;;
+  esac
 
   local current
   local need_commit=0
 
   # ---- NVRAM_VAR (wanduck_state) ----
   current="$(nvram_get_val "$NVRAM_VAR")"
-  if [ "$current" != "$primary_val" ]; then
-    log_info "Setting NVRAM ${NVRAM_VAR}=${primary_val} (was ${current})"
+  if [ "$current" != "$primary_val" ] ; then
+    log_debug "Setting NVRAM ${NVRAM_VAR}=${primary_val} (was ${current})"
     nvram_set_val "$NVRAM_VAR" "$primary_val"
     need_commit=1
   fi
 
   # ---- NVRAM_VAR2 (link_internet) — skip if empty ----
-  if [ -n "$NVRAM_VAR2" ]; then
+  if [ -n "$NVRAM_VAR2" ] ; then
     current="$(nvram_get_val "$NVRAM_VAR2")"
-    if [ "$current" != "$primary_val" ]; then
-      log_info "Setting NVRAM ${NVRAM_VAR2}=${primary_val} (was ${current})"
+    if [ "$current" != "$primary_val" ] ; then
+      log_debug "Setting NVRAM ${NVRAM_VAR2}=${primary_val} (was ${current})"
       nvram_set_val "$NVRAM_VAR2" "$primary_val"
       need_commit=1
     fi
   fi
 
   # ---- Extra variables ----
-  for entry in $EXTRA_NVRAM_VARS; do
+  for entry in $EXTRA_NVRAM_VARS ; do
     local var up_val down_val val
     var="${entry%%:*}"
     up_down_part="${entry#*:}"
-    if [ "$up_down_part" = "$entry" ]; then
+    if [ "$up_down_part" = "$entry" ] ; then
       # No colon — use global defaults
       up_val="$STATE_UP"
       down_val="$STATE_DOWN"
     else
       up_val="${up_down_part%%:*}"
       down_val_part="${up_down_part#*:}"
-      if [ "$down_val_part" = "$up_down_part" ]; then
+      if [ "$down_val_part" = "$up_down_part" ] ; then
         down_val="$STATE_DOWN"
       else
         down_val="$down_val_part"
       fi
     fi
 
-    if [ "$target_state" = "UP" ]; then
+    if [ "$target_state" = "UP" ] ; then
       val="$up_val"
     else
       val="$down_val"
     fi
 
     current="$(nvram_get_val "$var")"
-    if [ "$current" != "$val" ]; then
-      log_info "Setting NVRAM ${var}=${val} (was ${current})"
+    if [ "$current" != "$val" ] ; then
+      log_debug "Setting NVRAM ${var}=${val} (was ${current})"
       nvram_set_val "$var" "$val"
       need_commit=1
     fi
   done
 
-  if [ "$need_commit" -eq 1 ]; then
+  if [ "$need_commit" -eq 1 ] ; then
+    log_debug "Committing NVRAM changes"
     nvram_commit
   fi
 }
@@ -213,7 +223,7 @@ wan_is_up() {
 
 # Record the epoch when the outage started (only on first call)
 record_down_start() {
-  if [ ! -f "$STATE_FILE" ]; then
+  if [ ! -f "$STATE_FILE" ] ; then
     date '+%s' > "$STATE_FILE"
     log_info "Outage detected. Recording start time."
   fi
@@ -221,7 +231,7 @@ record_down_start() {
 
 # Return the epoch stored in STATE_FILE, or empty string if not set
 down_start_epoch() {
-  if [ -f "$STATE_FILE" ]; then
+  if [ -f "$STATE_FILE" ] ; then
     cat "$STATE_FILE" 2>/dev/null
   fi
 }
@@ -235,13 +245,13 @@ clear_down_start() {
 down_threshold_exceeded() {
   local start
   start="$(down_start_epoch)"
-  if [ -z "$start" ]; then
+  if [ -z "$start" ] ; then
     return 1
   fi
   local now
   now="$(date '+%s')"
   local elapsed=$(( now - start ))
-  if [ "$elapsed" -ge "$DOWN_THRESHOLD" ]; then
+  if [ "$elapsed" -ge "$DOWN_THRESHOLD" ] ; then
     return 0
   else
     return 1
@@ -263,12 +273,12 @@ main() {
   acquire_lock
   trap 'release_lock' EXIT INT TERM
 
-  log_info "=== WanCheck starting (PID $$) ==="
-  log_info "Target: ${PING_TARGET}, NVRAM vars: ${NVRAM_VAR}, ${NVRAM_VAR2}, UP=${STATE_UP}, DOWN=${STATE_DOWN}"
+  log_debug "=== WanCheck starting (PID $$) ==="
+  log_debug "Target: ${PING_TARGET}, NVRAM vars: ${NVRAM_VAR}, ${NVRAM_VAR2}, UP=${STATE_UP}, DOWN=${STATE_DOWN}"
 
   if wan_is_up ; then
     # ----- WAN is UP on entry -----
-    log_info "WAN UP."
+    log_debug "WAN UP."
     clear_down_start
     set_nvram_state UP
   else
@@ -293,14 +303,14 @@ main() {
         start="$(down_start_epoch)"
         elapsed=$(( $(date '+%s') - start ))
         remaining=$(( DOWN_THRESHOLD - elapsed ))
-        log_info "Still down (${elapsed}s elapsed, ${remaining}s until NVRAM commit)."
+        log_debug "Still down (${elapsed}s elapsed, ${remaining}s until NVRAM commit)."
       fi
 
       sleep "$FAST_POLL_INTERVAL"
     done
   fi
 
-  log_info "=== WanCheck done ==="
+  log_debug "=== WanCheck done ==="
 }
 
 main "$@"
