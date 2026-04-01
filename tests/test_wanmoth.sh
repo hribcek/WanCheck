@@ -1,6 +1,6 @@
 #!/bin/sh
 # =============================================================================
-# tests/test_wancheck.sh — Unit/integration tests for wancheck.sh
+# tests/test_wanmoth.sh — Unit/integration tests for wanmoth
 #
 # Strategy: create a per-test stub directory early on PATH so that `nvram`,
 # `ping`, `date`, and `sleep` can be replaced without patching the script.
@@ -9,7 +9,7 @@ set -e
 
 # Resolve the script path relative to this test file's location
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
-SCRIPT="${TESTS_DIR}/../wancheck.sh"
+SCRIPT="${TESTS_DIR}/../wanmoth"
 
 PASS=0
 FAIL=0
@@ -147,7 +147,7 @@ while [ \$# -gt 0 ]; do
     *) break ;;
   esac
 done
-printf '[%s] %s: %s\n' "\$_prio" "\$_tag" "\$*" >> "\${LOG_FILE:-${td}/wancheck.log}"
+printf '[%s] %s: %s\n' "\$_prio" "\$_tag" "\$*" >> "\${LOG_FILE:-${td}/wanmoth.log}"
 STUB
   chmod +x "${td}/bin/logger"
 }
@@ -158,9 +158,9 @@ run() {
   local td="$1"; shift
   (
     export PATH="${td}/bin:$PATH"
-    export LOG_FILE="${td}/wancheck.log"
-    export LOCK_FILE="${td}/wancheck.lock"
-    export STATE_FILE="${td}/wancheck_down_since"
+    export LOG_FILE="${td}/wanmoth.log"
+    export LOCK_FILE="${td}/wanmoth.lock"
+    export STATE_FILE="${td}/wanmoth_down_since"
     export PING_TARGET=8.8.8.8
     export NVRAM_VAR=wanduck_state
     export STATE_UP=2 STATE_DOWN=0
@@ -185,8 +185,8 @@ make_stubs "$T" "0" "1000"
 run "$T"
 assert_equals     "wanduck_state=2"   "2" "$(nvram_val "$T" wanduck_state)"
 assert_equals     "link_internet=2"   "2" "$(nvram_val "$T" link_internet)"
-assert_log_contains "log: WAN UP"     "WAN UP"   "${T}/wancheck.log"
-assert_file_absent  "lock removed"    "${T}/wancheck.lock"
+assert_log_contains "log: WAN UP"     "WAN UP"   "${T}/wanmoth.log"
+assert_file_absent  "lock removed"    "${T}/wanmoth.lock"
 rm -rf "$T"
 
 # =============================================================================
@@ -200,8 +200,8 @@ T="$(mktemp -d)"
 make_stubs "$T" "$(printf '1\n0')" "$(printf '1000\n1010\n1010')"
 run "$T"
 assert_equals       "wanduck_state=2 (UP)"    "2"   "$(nvram_val "$T" wanduck_state)"
-assert_log_contains "log: WAN recovered"      "WAN recovered"        "${T}/wancheck.log"
-assert_file_absent  "down_since file cleared" "${T}/wancheck_down_since"
+assert_log_contains "log: WAN recovered"      "WAN recovered"        "${T}/wanmoth.log"
+assert_file_absent  "down_since file cleared" "${T}/wanmoth_down_since"
 rm -rf "$T"
 
 # =============================================================================
@@ -214,8 +214,8 @@ echo "=== Test 3: WAN down beyond threshold → DOWN committed ==="
 T="$(mktemp -d)"
 make_stubs "$T" "$(printf '1\n1\n1\n0')" "$(printf '1000\n1040\n1040\n1040\n1040')"
 run "$T"
-assert_log_contains "log: threshold exceeded"  "Outage exceeded"  "${T}/wancheck.log"
-assert_log_contains "log: WAN recovered"       "WAN recovered"    "${T}/wancheck.log"
+assert_log_contains "log: threshold exceeded"  "Outage exceeded"  "${T}/wanmoth.log"
+assert_log_contains "log: WAN recovered"       "WAN recovered"    "${T}/wanmoth.log"
 assert_equals       "wanduck_state=2 after recovery" "2" "$(nvram_val "$T" wanduck_state)"
 assert_equals       "link_internet=2 after recovery" "2" "$(nvram_val "$T" link_internet)"
 rm -rf "$T"
@@ -240,10 +240,10 @@ echo ""
 echo "=== Test 5: Lock prevents second instance ==="
 T="$(mktemp -d)"
 make_stubs "$T" "0" "1000"
-echo $$ > "${T}/wancheck.lock"          # simulate already-running instance
+echo $$ > "${T}/wanmoth.lock"           # simulate already-running instance
 run "$T" || true                        # should exit 0 early (not an error)
 assert_log_contains "log: another instance warning" \
-  "Another instance" "${T}/wancheck.log"
+  "Another instance" "${T}/wanmoth.log"
 rm -rf "$T"
 
 # =============================================================================
@@ -256,7 +256,7 @@ make_stubs "$T" "0" "1000"
 echo "1234" > "${T}/pidof_wanduck"   # simulate wanduck PID
 run "$T" || true
 assert_log_contains "log: wanduck running" \
-  "wanduck daemon is running" "${T}/wancheck.log"
+  "wanduck daemon is running" "${T}/wanmoth.log"
 # wanduck_state must NOT be written (no nvram activity expected)
 assert_equals "wanduck_state not written" "" "$(nvram_val "$T" wanduck_state)"
 rm -rf "$T"

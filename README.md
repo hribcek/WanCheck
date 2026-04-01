@@ -1,4 +1,4 @@
-# WanCheck
+# WanMoth
 
 A lightweight, persistent WAN-connection monitoring script for
 **Asuswrt-Merlin** routers. It pings a configurable target to detect
@@ -37,7 +37,7 @@ thanks to the router's JFFS2 persistent partition.
 
 ```sh
 # From your workstation
-scp wancheck.sh install.sh admin@192.168.1.1:/tmp/
+scp wanmoth install.sh admin@192.168.1.1:/tmp/
 ```
 
 ### 2 — Install
@@ -50,7 +50,7 @@ sh install.sh
 
 `install.sh` will:
 
-1. Copy `wancheck.sh` to `/jffs/scripts/wancheck.sh`
+1. Copy `wanmoth` to `/jffs/scripts/wanmoth`
 2. Add a cron job via `cru` (runs every 5 minutes by default)
 3. Append the `cru` registration to `/jffs/scripts/services-start` so the
    cron job is re-registered on every boot
@@ -59,11 +59,11 @@ sh install.sh
 
 ```sh
 # Confirm cron entry
-crontab -l | grep wancheck
+cru l
 
 # Run once manually and watch syslog
-sh /jffs/scripts/wancheck.sh
-logread | grep wancheck
+/jffs/scripts/wanmoth
+logread -e wanmoth -l 20
 
 # Check the NVRAM variables
 nvram get wanduck_state
@@ -81,8 +81,9 @@ sh install.sh --uninstall
 ## Configuration
 
 All options are environment variables with sensible defaults.  
-Override them by exporting before running, or by editing the `Configuration`
-block at the top of `wancheck.sh`.
+Override them by exporting before running. Avoid editing the tracked `wanmoth`
+script directly after installation, especially in environments that verify file
+integrity.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -110,8 +111,11 @@ flag (up=1, down=0):
 
 ```sh
 export EXTRA_NVRAM_VARS="wan0_state_t:2:0 custom_flag:1:0"
-sh /jffs/scripts/wancheck.sh
+/jffs/scripts/wanmoth
 ```
+
+For persistent custom settings, use a wrapper or custom cron command that
+exports the desired variables before running `/jffs/scripts/wanmoth`.
 
 ### Custom cron schedule
 
@@ -129,11 +133,11 @@ CRON_SCHEDULE="*/2 * * * *" sh install.sh
 ```
 cron (every N min)
       │
-      └─► wancheck.sh
+      └─► wanmoth
               │
               ├─ wanduck running? ──► yes → log to syslog, exit immediately
               │
-              ├─ acquire lock  (/tmp/wancheck.lock)
+              ├─ acquire lock  (/tmp/wanmoth.lock)
               │
               ├─ ping PING_TARGET
               │       │
@@ -161,15 +165,15 @@ DOWN timestamp is cleared and the NVRAM variables are restored to `STATE_UP`.
 ```
 /jffs/
 └── scripts/
-    ├── wancheck.sh          ← monitoring script
+    ├── wanmoth              ← monitoring script
     └── services-start       ← boot hook (cron registration appended here)
 
 /tmp/
-├── wancheck.lock            ← PID lock file (auto-removed on exit)
-└── wancheck_down_since      ← outage start epoch (auto-removed on recovery)
+  ├── wanmoth.lock             ← PID lock file (auto-removed on exit)
+  └── wanmoth_down_since       ← outage start epoch (auto-removed on recovery)
 ```
 
-All log messages are written to syslog — use `logread | grep wancheck` to view them.
+  All log messages are written to syslog - use `logread -e wanmoth -l 20` to view them.
 
 ---
 

@@ -1,10 +1,10 @@
 #!/bin/sh
 # shellcheck shell=ash
 # =============================================================================
-# install.sh — Deploy WanCheck to Asuswrt-Merlin JFFS persistent storage
+# install.sh — Deploy WanMoth to Asuswrt-Merlin JFFS persistent storage
 # =============================================================================
 # Run this script once on the router (via SSH or the router's admin console)
-# to copy wancheck.sh to the JFFS partition and wire up a cron job that
+# to copy wanmoth to the JFFS partition and wire up a cron job that
 # survives reboots.
 #
 # Usage:
@@ -13,40 +13,45 @@
 # Prerequisites:
 #   • JFFS2 partition enabled in the router admin UI
 #     (Administration → System → Enable JFFS custom scripts and configs: Yes)
-#   • wancheck.sh is present in the same directory as this script
+#   • wanmoth is present in the same directory as this script
 # =============================================================================
 
 set -e
 
-SCRIPT_SRC="$(cd "$(dirname "$0")" && pwd)/wancheck.sh"
-JFFS_SCRIPTS="/jffs/scripts"
-JFFS_CONFIGS="/jffs/configs"
-INSTALL_PATH="${JFFS_SCRIPTS}/wancheck.sh"
-INIT_SCRIPT="${JFFS_SCRIPTS}/services-start"
-CRON_TAG="wancheck"
+scriptName="wanmoth"
+scriptSrc="$(cd "$(dirname "$0")" && pwd)/${scriptName}"
+
+jffsScripts="/jffs/scripts"
+jffsConfigs="/jffs/configs"
+installPath="${jffsScripts}/${scriptName}"
+initScript="${jffsScripts}/services-start"
+
+# Marker for installation in services-start
+scriptTag="# ${scriptName}"
 
 # Default cron schedule: every 5 minutes
-CRON_SCHEDULE="${CRON_SCHEDULE:-*/5 * * * *}"
+cronSchedule="${cronSchedule:-*/5 * * * *}"
+cronTag="${scriptName}"
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-info() { printf '[install] %s\n' "$*"; }
-
-require_root() {
-  [ "$(id -u)" -eq 0 ] || die "This script must be run as root."
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+info() {
+  printf '[install] %s\n' "$*"
 }
 
 check_jffs() {
-  if [ ! -d "$JFFS_SCRIPTS" ]; then
-    info "Creating ${JFFS_SCRIPTS} ..."
-    mkdir -p "$JFFS_SCRIPTS" \
-      || die "Could not create ${JFFS_SCRIPTS}. Is JFFS enabled?"
+  if [ ! -d "${jffsScripts}" ]; then
+    info "Creating ${jffsScripts} ..."
+    mkdir -p "${jffsScripts}" || die "Could not create ${jffsScripts}. Is JFFS enabled?"
   fi
-  if [ ! -d "$JFFS_CONFIGS" ]; then
-    mkdir -p "$JFFS_CONFIGS"
+  if [ ! -d "${jffsConfigs}" ]; then
+    mkdir -p "${jffsConfigs}" || die "Could not create ${jffsConfigs}. Is JFFS enabled?"
   fi
 }
 
@@ -55,45 +60,44 @@ check_jffs() {
 # ---------------------------------------------------------------------------
 
 do_install() {
-  require_root
   check_jffs
 
-  [ -f "$SCRIPT_SRC" ] || die "wancheck.sh not found at ${SCRIPT_SRC}"
+  if [ ! -f "${scriptSrc}" ]; then
+    die "${scriptName} not found at ${scriptSrc}"
+  fi
 
-  info "Copying wancheck.sh → ${INSTALL_PATH}"
-  cp "$SCRIPT_SRC" "$INSTALL_PATH"
-  chmod 755 "$INSTALL_PATH"
+  info "Copying ${scriptName} -> ${installPath}"
+  cp -f "${scriptSrc}" "${installPath}" || die "Failed to copy ${scriptName} to ${installPath}"
+  chmod 755 "${installPath}" || die "Failed to set executable permissions on ${installPath}"
 
   # Register cron job using the Merlin 'cru' helper (persists via
   # /jffs/scripts/services-start which is sourced on every boot).
-  info "Adding cron job: ${CRON_SCHEDULE} ${INSTALL_PATH}"
-  cru a "$CRON_TAG" "${CRON_SCHEDULE} ${INSTALL_PATH}"
+  info "Adding cron job: ${cronSchedule} ${installPath}"
+  cru a "${cronTag}" "${cronSchedule} ${installPath}"
 
   # Persist the cron registration across reboots via services-start
   _persist_cron
 
   info "Installation complete."
-  info "  Script : ${INSTALL_PATH}"
-  info "  Cron   : ${CRON_SCHEDULE} (tag: ${CRON_TAG})"
-  info "  Log    : /tmp/wancheck.log"
+  info "  Script : ${installPath}"
+  info "  Cron   : ${cronSchedule} (tag: ${cronTag})"
 }
 
 # Append the cru registration to services-start so it survives reboots.
 _persist_cron() {
-  local marker="# wancheck-cron"
-  local entry="cru a ${CRON_TAG} \"${CRON_SCHEDULE} ${INSTALL_PATH}\""
+  local entry="cru a ${cronTag} \"${cronSchedule} ${installPath}\"  ${scriptTag}"
 
-  if [ ! -f "$INIT_SCRIPT" ]; then
-    info "Creating ${INIT_SCRIPT}"
-    printf '#!/bin/sh\n' > "$INIT_SCRIPT"
-    chmod 755 "$INIT_SCRIPT"
+  if [ ! -f "${initScript}" ]; then
+    info "Creating ${initScript}"
+    printf '#!/bin/sh\n' > "${initScript}"
+    chmod 755 "${initScript}"
   fi
 
-  if grep -q "$marker" "$INIT_SCRIPT" 2>/dev/null; then
-    info "services-start already contains wancheck cron entry — skipping."
+  if grep -q "${scriptTag}" "${initScript}" 2>/dev/null; then
+    info "services-start already contains ${scriptName} entry - skipping."
   else
-    info "Appending cron registration to ${INIT_SCRIPT}"
-    printf '\n%s\n%s\n' "$marker" "$entry" >> "$INIT_SCRIPT"
+    info "Appending cron registration to ${initScript}"
+    printf '\n%s\n' "${entry}" >> "${initScript}"
   fi
 }
 
@@ -102,24 +106,22 @@ _persist_cron() {
 # ---------------------------------------------------------------------------
 
 do_uninstall() {
-  require_root
+  info "Removing cron job (tag: ${cronTag})"
+  cru d "${cronTag}" 2>/dev/null || true
 
-  info "Removing cron job (tag: ${CRON_TAG})"
-  cru d "$CRON_TAG" 2>/dev/null || true
-
-  if [ -f "$INIT_SCRIPT" ]; then
-    info "Removing cron entry from ${INIT_SCRIPT}"
-    # Remove the marker line and the cru command line that follows it
-    sed -i "/# wancheck-cron/,+1d" "$INIT_SCRIPT"
+  if [ -f "${initScript}" ]; then
+    info "Removing entry from ${initScript}"
+    # Remove lines previously added by this installer.
+    sed -i "/${scriptTag}/d" "${initScript}" 2>/dev/null || true
   fi
 
-  if [ -f "$INSTALL_PATH" ]; then
-    info "Removing ${INSTALL_PATH}"
-    rm -f "$INSTALL_PATH"
+  if [ -f "${installPath}" ]; then
+    info "Removing ${installPath}"
+    rm -f "${installPath}"
   fi
 
   info "Cleaning up temporary files"
-  rm -f /tmp/wancheck.lock /tmp/wancheck_down_since /tmp/wancheck.log
+  rm -f "/tmp/${scriptName}.lock" "/tmp/${scriptName}_down_since"
 
   info "Uninstall complete."
 }

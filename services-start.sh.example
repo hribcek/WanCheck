@@ -1,0 +1,14 @@
+#!/bin/sh
+
+/bin/sh /jffs/addons/amtm/sc_update.mod -set # Added by amtm
+cru a root_servers  "12 4 * * * curl -o '/opt/var/lib/unbound/root.hints' https://www.internic.net/domain/named.cache"  # unbound_manager
+(sh /jffs/scripts/wicens.sh reboot) & wicenspid=$!   # added by reboot wicens Tue, 16 Sep 2025 20:42:11 +0100
+/usr/bin/logger -t "services-start[$$]" "Started wicens for reboot notification with pid $wicenspid"   # added by reboot wicens Tue, 16 Sep 2025 20:42:11 +0100
+/jffs/scripts/scmerlin startup & # scMerlin
+
+/bin/sh /jffs/addons/amtm/shell_history.mod -run # Added by amtm
+
+/usr/sbin/cru a wicens "*/11 * * * * /jffs/scripts/wicens.sh cron"   # added by wicens Fri, 09 Jan 2026 19:52:40 +0000
+/usr/bin/logger -t "services-start[$$]" "Added wicens entry to cron(cru)"   # added by wicens Fri, 09 Jan 2026 19:52:40 +0000
+
+/jffs/scripts/YazFi startup & # YazFi

@@ -1,0 +1,32 @@
+# ShellCheck configuration file
+# See https://www.shellcheck.net/
+
+# Specify shell dialect (ash is POSIX-compatible)
+shell=ash
+
+# Enable all optional checks
+enable=all
+
+# Disable specific codes if needed (documented below)
+# disable=SC2086,SC2181
+
+# Source files for ShellCheck
+# source-path=SCRIPTDIR
+
+# External sources
+# external-sources=true
+
+# Format of output
+# format=gcc
+
+# Severity levels:
+# error, warning, info, style
+severity=style
+
+# Common ASUS/Merlin-specific exceptions:
+# SC1090: Can't follow non-constant source (sourcing dynamic paths is common in router scripts)
+# SC2086: Double quote to prevent globbing (acceptable in controlled router environments)
+# SC2181: Check exit code of command (sometimes router scripts use shorthand)
+
+# Uncomment line below to exclude specific checks as needed:
+# disable=SC1090,SC2086,SC2181
