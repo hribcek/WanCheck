@@ -150,6 +150,24 @@ done
 printf '[%s] %s: %s\n' "\$_prio" "\$_tag" "\$*" >> "\${LOG_FILE:-${td}/wanmoth.log}"
 STUB
   chmod +x "${td}/bin/logger"
+
+  # service stub — records each invocation to SERVICE_LOG for test assertions.
+  cat > "${td}/bin/service" << STUB
+#!/bin/sh
+printf '%s\n' "\$*" >> "\${SERVICE_LOG:-${td}/service.log}"
+exit 0
+STUB
+  chmod +x "${td}/bin/service"
+
+  # nslookup stub — exit code is read from ${td}/nslookup_rc (default 0).
+  cat > "${td}/bin/nslookup" << STUB
+#!/bin/sh
+rc_file="${td}/nslookup_rc"
+rc=0
+if [ -f "\$rc_file" ]; then rc=\$(cat "\$rc_file"); fi
+exit "\${rc:-0}"
+STUB
+  chmod +x "${td}/bin/nslookup"
 }
 
 nvram_val() { grep "^${2}=" "${1}/nvram_store/vars" 2>/dev/null | cut -d= -f2- || true; }
@@ -159,11 +177,15 @@ run() {
   (
     export PATH="${td}/bin:$PATH"
     export LOG_FILE="${td}/wanmoth.log"
+    export SERVICE_LOG="${td}/service.log"
     export LOCK_FILE="${td}/wanmoth.lock"
     export STATE_FILE="${td}/wanmoth_down_since"
+    export RESTART_FILE="${td}/wanmoth_last_restart"
     export PING_TARGET=8.8.8.8
     export NVRAM_VAR=wanduck_state
+    export NVRAM_VAR2=link_internet
     export STATE_UP=2 STATE_DOWN=0
+    export EXTRA_NVRAM_VARS=""
     export DOWN_THRESHOLD=30 FAST_POLL_INTERVAL=5
     # Allow callers to pass "VAR=value" pairs as extra arguments
     for kv in "$@"; do
@@ -256,9 +278,112 @@ make_stubs "$T" "0" "1000"
 echo "1234" > "${T}/pidof_wanduck"   # simulate wanduck PID
 run "$T" || true
 assert_log_contains "log: wanduck running" \
-  "wanduck daemon is running" "${T}/wanmoth.log"
+  "Daemon wanduck is still running" "${T}/wanmoth.log"
 # wanduck_state must NOT be written (no nvram activity expected)
 assert_equals "wanduck_state not written" "" "$(nvram_val "$T" wanduck_state)"
+rm -rf "$T"
+
+# =============================================================================
+# Test 7: RESTART_WAN=true — service restart_wan_if called when threshold exceeded
+#         ping: fail x3, then succeed
+#         epoch: 1000 (start), 1040 (>30 — threshold), 1040, 1040, 1040
+# =============================================================================
+echo ""
+echo "=== Test 7: RESTART_WAN=true triggers service restart ==="
+T="$(mktemp -d)"
+make_stubs "$T" "$(printf '1\n1\n1\n0')" "$(printf '1000\n1040\n1040\n1040\n1040\n1040')"
+run "$T" \
+  "RESTART_WAN=true" \
+  "RESTART_WAN_CMD=service restart_wan_if 0" \
+  "RESTART_COOLDOWN=300"
+assert_log_contains    "log: restart triggered"     "Triggering WAN restart" "${T}/wanmoth.log"
+assert_log_contains    "service log: restart called" "restart_wan_if 0"       "${T}/service.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 8: Multi-target probe — first target fails, second succeeds → WAN UP
+#         Two ping calls: first returns 1, second returns 0
+# =============================================================================
+echo ""
+echo "=== Test 8: Multi-target probe — first fails, second succeeds ==="
+T="$(mktemp -d)"
+make_stubs "$T" "$(printf '1\n0')" "1000"
+run "$T" \
+  "PING_TARGETS=192.0.2.1 1.0.0.1"
+assert_equals       "wanduck_state=2 (UP)" "2" "$(nvram_val "$T" wanduck_state)"
+assert_log_contains "log: WAN UP"          "WAN UP" "${T}/wanmoth.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 9: Restart cooldown — second call within RESTART_COOLDOWN does NOT restart
+#         First call sets RESTART_FILE at epoch 1000; second call at epoch 1050
+#         with RESTART_COOLDOWN=300 should skip restart.
+# =============================================================================
+echo ""
+echo "=== Test 9: Restart cooldown suppresses duplicate restart ==="
+T="$(mktemp -d)"
+# First invocation: WAN goes down and exceeds threshold, restart fires
+make_stubs "$T" "$(printf '1\n1\n1\n0')" "$(printf '1000\n1040\n1040\n1040\n1040\n1040')"
+run "$T" \
+  "RESTART_WAN=true" \
+  "RESTART_WAN_CMD=service restart_wan_if 0" \
+  "RESTART_COOLDOWN=300"
+assert_log_contains "first restart fired" "restart_wan_if 0" "${T}/service.log"
+# Second invocation at epoch 1050 — only 50s since last restart (< 300s cooldown)
+# Reset ping_seq and date_seq for the second run
+printf '1\n1\n1\n0\n' > "${T}/ping_seq"
+printf '1050\n1090\n1090\n1090\n1090\n1090\n' > "${T}/date_seq"
+run "$T" \
+  "RESTART_WAN=true" \
+  "RESTART_WAN_CMD=service restart_wan_if 0" \
+  "RESTART_COOLDOWN=300"
+restart_count="$(grep -c "restart_wan_if" "${T}/service.log" 2>/dev/null || echo 0)"
+assert_equals "second restart suppressed by cooldown" "1" "${restart_count}"
+assert_log_contains "log: cooldown message" "cooldown active" "${T}/wanmoth.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 10: DNS probe mode — PROBE_MODE=dns with a succeeding nslookup stub
+# =============================================================================
+echo ""
+echo "=== Test 10: DNS probe mode — nslookup succeeds → WAN UP ==="
+T="$(mktemp -d)"
+make_stubs "$T" "1" "1000"   # ping always fails; nslookup will succeed
+# nslookup_rc defaults to 0 (success) in the stub — no file needed
+run "$T" \
+  "PROBE_MODE=dns" \
+  "DNS_PROBE_HOST=connectivity-check.example.com"
+assert_equals       "wanduck_state=2 (UP via DNS)" "2" "$(nvram_val "$T" wanduck_state)"
+assert_log_contains "log: WAN UP via DNS"           "WAN UP" "${T}/wanmoth.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 11: Default EXTRA_NVRAM_VARS — wan0_state, wan0_realstate, wanduck_state
+#          all set to their correct UP values when using production defaults.
+#          Uses NVRAM_VAR=link_internet (production default) so wanduck_state
+#          is managed exclusively through EXTRA_NVRAM_VARS.
+# =============================================================================
+echo ""
+echo "=== Test 11: Default EXTRA_NVRAM_VARS sets all three extra variables ==="
+T="$(mktemp -d)"
+make_stubs "$T" "0" "1000"
+(
+  export PATH="${T}/bin:$PATH"
+  export LOG_FILE="${T}/wanmoth.log"
+  export SERVICE_LOG="${T}/service.log"
+  export LOCK_FILE="${T}/wanmoth.lock"
+  export STATE_FILE="${T}/wanmoth_down_since"
+  export RESTART_FILE="${T}/wanmoth_last_restart"
+  export PING_TARGET=8.8.8.8
+  export DOWN_THRESHOLD=30 FAST_POLL_INTERVAL=5
+  # Intentionally omit EXTRA_NVRAM_VARS to exercise the script default
+  # Intentionally omit NVRAM_VAR to use the script default (link_internet)
+  sh "$SCRIPT"
+)
+assert_equals "link_internet=2 (primary UP)"   "2" "$(nvram_val "$T" link_internet)"
+assert_equals "wan0_state=2 (extra UP)"        "2" "$(nvram_val "$T" wan0_state)"
+assert_equals "wan0_realstate=2 (extra UP)"    "2" "$(nvram_val "$T" wan0_realstate)"
+assert_equals "wanduck_state=1 (extra active)" "1" "$(nvram_val "$T" wanduck_state)"
 rm -rf "$T"
 
 # =============================================================================

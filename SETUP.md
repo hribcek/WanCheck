@@ -116,6 +116,14 @@ chmod +x /jffs/scripts/wanmoth
 - Check logs: `logread -e wanmoth -l 20`
 - Run with debug mode: `sh -x /jffs/scripts/wanmoth`
 
+### WAN Restart Not Firing
+- Ensure `RESTART_WAN=true` is exported before running the script.
+- Check the log for "cooldown active" — this means a restart was triggered
+  within the last `RESTART_COOLDOWN` seconds (default 300). Remove
+  `/tmp/wanmoth_last_restart` to reset the cooldown manually.
+- Confirm the `RESTART_WAN_CMD` value is appropriate for your firmware
+  (default: `service restart_wan_if 0`).
+
 
 ## Uninstallation
 
