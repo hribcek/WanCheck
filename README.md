@@ -16,9 +16,9 @@ router's JFFS2 persistent partition.
 | **Accurate state tracking** | NVRAM is only set to DOWN after a configurable silence threshold, preventing false alarms from brief transient blips |
 | **Fast-polling during outages** | Switches to a tight check loop (default every 10 s) so recovery is detected and NVRAM is restored quickly |
 | **Multi-target probe** | `PING_TARGETS` accepts a space-separated list; WAN is considered UP as soon as any target responds |
-| **DNS probe support** | Set `DNS_PROBE_HOST` and `PROBE_MODE=dns` (or `any`) to use DNS lookups alongside or instead of ICMP pings |
-| **WAN restart trigger** | Set `RESTART_WAN=true` to call `service restart_wan_if 0` when a confirmed outage exceeds the threshold, with a configurable cooldown to prevent back-to-back resets |
-| **Correct NVRAM semantics** | Manages `link_internet` (2/1), `wan0_state` (2/3), `wan0_realstate` (2/0), and `wanduck_state` (1/0) with the values the WebUI actually expects |
+| **DNS probe support** | `DNS_PROBE_HOSTS` accepts a space-separated list of hostnames; set `PROBE_MODE=dns` (or `any`) to use DNS lookups alongside or instead of ICMP pings |
+| **WAN restart trigger** | `RESTART_WAN=true` calls `service restart_wan_if 0` when a confirmed outage exceeds the threshold, with a configurable cooldown to prevent back-to-back resets — **disabled by default** (see Configuration) |
+| **Correct NVRAM semantics** | Manages `link_internet` (2/1), `wan0_state` (2/3), `wan0_realstate` (2/0), `wanduck_state` (1/0), and optionally `wan0_auxstate` (0/2) with hardcoded values the WebUI actually expects |
 | **wanduck awareness** | Detects if the `wanduck` daemon is running and defers to it, avoiding conflicting NVRAM writes |
 | **Lock file** | Prevents multiple overlapping cron invocations |
 | **Syslog integration** | All messages are written to syslog via BusyBox `logger` — readable with `logread` |
@@ -97,7 +97,8 @@ integrity.
 | `PING_TARGET` | `1.0.0.1` | Deprecated single-target fallback when `PING_TARGETS` is unset |
 | `PING_COUNT` | `3` | ICMP packets sent per target per check |
 | `PING_TIMEOUT` | `3` | Seconds to wait per packet |
-| `DNS_PROBE_HOST` | *(empty — disabled)* | Hostname to resolve as a DNS connectivity probe |
+| `DNS_PROBE_HOSTS` | *(empty — disabled)* | Space-separated list of hostnames to resolve; WAN is UP if **any** resolves |
+| `DNS_PROBE_HOST` | *(empty)* | Deprecated single-host fallback when `DNS_PROBE_HOSTS` is unset |
 | `PROBE_MODE` | `ping` | Probe strategy: `ping`, `dns`, or `any` (pass if ping **or** DNS succeeds) |
 
 ### Timing settings
@@ -109,45 +110,34 @@ integrity.
 
 ### WAN restart settings
 
+> **Disabled by default.**  
+> The exact definition of a "confirmed outage" is still under review. Enabling
+> `RESTART_WAN` prematurely may cause unnecessary WAN bounces on transient link
+> flaps. Enable it only once you have confirmed that the threshold and cooldown
+> values match your ISP's reconnect behaviour.
+
 | Variable | Default | Description |
 |---|---|---|
 | `RESTART_WAN` | `false` | Set to `true` to trigger a firmware WAN restart when the DOWN threshold is exceeded |
 | `RESTART_WAN_CMD` | `service restart_wan_if 0` | Command run to restart the WAN interface |
 | `RESTART_COOLDOWN` | `300` | Minimum seconds between successive WAN restart triggers |
 
-### NVRAM settings
+### NVRAM management settings
 
-| Variable | Default | Description |
-|---|---|---|
-| `NVRAM_VAR` | `link_internet` | Primary NVRAM variable to manage (`2`=connected, `1`=disconnected) |
-| `NVRAM_VAR2` | *(empty — disabled)* | Optional second primary NVRAM variable |
-| `NVRAM_VAR2_UP` | *(same as `STATE_UP`)* | UP value override for `NVRAM_VAR2` |
-| `NVRAM_VAR2_DOWN` | *(same as `STATE_DOWN`)* | DOWN value override for `NVRAM_VAR2` |
-| `STATE_UP` | `2` | Integer value written to `NVRAM_VAR` when WAN is UP |
-| `STATE_DOWN` | `1` | Integer value written to `NVRAM_VAR` when WAN is DOWN |
-| `EXTRA_NVRAM_VARS` | `wan0_state:2:3 wan0_realstate:2:0 wanduck_state:1:0` | Space-separated extra variables — see below |
+Each NVRAM variable is managed individually. Values are hardcoded to match
+the exact semantics used by the Asuswrt-Merlin firmware and WebUI.
 
-### Extra NVRAM variables
+| Variable | Default | NVRAM variable managed | UP value | DOWN value |
+|---|---|---|---|---|
+| `MANAGE_LINK_INTERNET` | `true` | `link_internet` | `2` | `1` |
+| `MANAGE_WAN0_STATE` | `true` | `wan0_state` | `2` | `3` |
+| `MANAGE_WAN0_REALSTATE` | `true` | `wan0_realstate` | `2` | `0` |
+| `MANAGE_WANDUCK_STATE` | `true` | `wanduck_state` | `1` | `0` |
+| `MANAGE_WAN0_AUXSTATE` | `false` | `wan0_auxstate` | `0` | `2` |
 
-`EXTRA_NVRAM_VARS` accepts a space-separated list.  
-Each entry can be either:
-
-* `varname` — uses the global `STATE_UP` / `STATE_DOWN` values
-* `varname:up_val:down_val` — uses per-variable integer overrides
-
-The default value keeps `wan0_state`, `wan0_realstate`, and `wanduck_state`
-in sync with the correct semantics used by the Asuswrt-Merlin WebUI.  
-Set `EXTRA_NVRAM_VARS=""` to disable all extra-variable management.
-
-**Example** — add a custom flag (up=1, down=0) on top of the defaults:
-
-```sh
-export EXTRA_NVRAM_VARS="wan0_state:2:3 wan0_realstate:2:0 wanduck_state:1:0 custom_flag:1:0"
-/jffs/scripts/wanmoth
-```
-
-For persistent custom settings, use a wrapper or custom cron command that
-exports the desired variables before running `/jffs/scripts/wanmoth`.
+`MANAGE_WAN0_AUXSTATE` is disabled by default because the correct DOWN value
+is ISP-protocol-specific: PPPoE authentication failures use `1`; DHCP timeouts
+use `2`. Enable it only when you know which value applies to your link type.
 
 ### Custom cron schedule
 
@@ -182,10 +172,12 @@ cron (every N min)
               │                          ┌─ probe every FAST_POLL_INTERVAL s
               │                          ├─ [success] → set UP, exit loop
               │                          └─ [failure, elapsed ≥ DOWN_THRESHOLD]
-              │                               → set NVRAM → STATE_DOWN
+              │                               → set NVRAM → DOWN values
               │                               → if RESTART_WAN=true and
               │                                 cooldown elapsed:
               │                                 run RESTART_WAN_CMD
+              │                                 (disabled by default — see
+              │                                 Configuration for details)
               │
               └─ release lock
 ```
@@ -217,10 +209,11 @@ DOWN timestamp is cleared and the NVRAM variables are restored to `STATE_UP`.
 
 | Variable | UP value | DOWN value | Notes |
 |---|---|---|---|
-| `link_internet` | `2` | `1` | WebUI globe icon: 2=connected, 1=disconnected (`NVRAM_VAR`) |
-| `wan0_state` | `2` | `3` | WAN0 logical state: 2=connected, 3=disconnected (`EXTRA_NVRAM_VARS`) |
-| `wan0_realstate` | `2` | `0` | WAN0 physical link state: 2=stable, 0=init/down (`EXTRA_NVRAM_VARS`) |
-| `wanduck_state` | `1` | `0` | Watchdog daemon active: 1=active, 0=inactive (`EXTRA_NVRAM_VARS`) |
+| `link_internet` | `2` | `1` | WebUI globe icon: 2=connected, 1=disconnected (`MANAGE_LINK_INTERNET`) |
+| `wan0_state` | `2` | `3` | WAN0 logical state: 2=connected, 3=disconnected (`MANAGE_WAN0_STATE`) |
+| `wan0_realstate` | `2` | `0` | WAN0 physical link state: 2=stable, 0=init/down (`MANAGE_WAN0_REALSTATE`) |
+| `wanduck_state` | `1` | `0` | Watchdog daemon active: 1=active, 0=inactive (`MANAGE_WANDUCK_STATE`) |
+| `wan0_auxstate` | `0` | `2` | WAN0 error sub-state: 0=no error, 2=no ISP response (`MANAGE_WAN0_AUXSTATE`, disabled by default) |
 
 Values match those used internally by the Asuswrt-Merlin `wanduck` daemon.
 

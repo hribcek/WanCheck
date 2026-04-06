@@ -5,7 +5,7 @@
 # =============================================================================
 # Monitors WAN connectivity via ICMP ping and/or DNS probes against one or
 # more configurable targets and keeps NVRAM state variables (link_internet,
-# wan0_state, wan0_realstate, wanduck_state, + any extras) in sync with the
+# wan0_state, wan0_realstate, wan0_auxstate, wanduck_state) in sync with the
 # actual connection state.
 #
 # Intended deployment:  /jffs/scripts/wanmoth
@@ -38,43 +38,45 @@ PING_COUNT="${PING_COUNT:-3}"
 # Seconds to wait for each ping response
 PING_TIMEOUT="${PING_TIMEOUT:-3}"
 
-# Hostname to resolve as a DNS connectivity probe.
+# Space-separated list of hostnames to resolve as DNS connectivity probes.
+# The probe passes as soon as ANY host resolves; all must fail for DOWN.
+# Example:  DNS_PROBE_HOSTS="dns.google connectivity-check.example.com"
 # Leave empty (default) to disable DNS probing.
+DNS_PROBE_HOSTS="${DNS_PROBE_HOSTS:-}"
+
+# Deprecated: single-host alias kept for backwards compatibility.
+# If DNS_PROBE_HOSTS is unset, DNS_PROBE_HOST is used instead.
 DNS_PROBE_HOST="${DNS_PROBE_HOST:-}"
 
 # Probe strategy:
 #   ping  — ICMP ping only (default)
-#   dns   — DNS lookup only (requires DNS_PROBE_HOST)
+#   dns   — DNS lookup only (requires DNS_PROBE_HOSTS)
 #   any   — pass if ping OR DNS succeeds
 PROBE_MODE="${PROBE_MODE:-ping}"
 
-# Primary NVRAM variable whose value reflects WAN/internet status.
-# link_internet: 2=connected, 1=disconnected (used by the WebUI globe icon).
-NVRAM_VAR="${NVRAM_VAR:-link_internet}"
+# ---------------------------------------------------------------------------
+# NVRAM management — each variable is individually enabled or disabled.
+# Values are hardcoded to match Asuswrt-Merlin firmware semantics exactly.
+# See the NVRAM Reference section in README.md for details.
+# ---------------------------------------------------------------------------
 
-# Second primary NVRAM variable. Set to an empty string to disable.
-NVRAM_VAR2="${NVRAM_VAR2:-}"
+# link_internet: WebUI globe icon — 2=connected, 1=disconnected
+MANAGE_LINK_INTERNET="${MANAGE_LINK_INTERNET:-true}"
 
-# NVRAM integer value that represents the connected (UP) state
-STATE_UP="${STATE_UP:-2}"
+# wan0_state: WAN0 logical state — 2=connected, 3=disconnected
+MANAGE_WAN0_STATE="${MANAGE_WAN0_STATE:-true}"
 
-# NVRAM integer value that represents the disconnected (DOWN) state
-STATE_DOWN="${STATE_DOWN:-1}"
+# wan0_realstate: WAN0 physical link state — 2=stable, 0=init/down
+MANAGE_WAN0_REALSTATE="${MANAGE_WAN0_REALSTATE:-true}"
 
-# Optional per-variable up/down overrides for NVRAM_VAR2.
-# Defaults to STATE_UP / STATE_DOWN when not set.
-NVRAM_VAR2_UP="${NVRAM_VAR2_UP:-${STATE_UP}}"
-NVRAM_VAR2_DOWN="${NVRAM_VAR2_DOWN:-${STATE_DOWN}}"
+# wanduck_state: watchdog daemon active — 1=active, 0=inactive
+MANAGE_WANDUCK_STATE="${MANAGE_WANDUCK_STATE:-true}"
 
-# Space-separated list of additional NVRAM variables to keep in sync.
-# Each entry may optionally carry per-variable up/down overrides using
-# the format  "varname:up_val:down_val"  (colon-separated).
-# Default keeps wan0_state, wan0_realstate, and wanduck_state accurate.
-# Set EXTRA_NVRAM_VARS="" to disable all extra-variable management.
-# Note: uses ${var-default} (not ${var:-default}) so an explicitly exported
-# empty string is honoured as "no extras" rather than silently replaced by
-# the default list.
-EXTRA_NVRAM_VARS="${EXTRA_NVRAM_VARS-wan0_state:2:3 wan0_realstate:2:0 wanduck_state:1:0}"
+# wan0_auxstate: WAN0 error sub-state — 0=no error, 2=no response from ISP
+# Disabled by default because the correct DOWN value is ISP-protocol-specific
+# (PPPoE auth failures use 1; DHCP timeouts use 2). Enable only when you know
+# which value your ISP link type requires.
+MANAGE_WAN0_AUXSTATE="${MANAGE_WAN0_AUXSTATE:-false}"
 
 # Seconds a WAN outage must persist before STATE_DOWN is written to NVRAM
 DOWN_THRESHOLD="${DOWN_THRESHOLD:-60}"
@@ -83,7 +85,13 @@ DOWN_THRESHOLD="${DOWN_THRESHOLD:-60}"
 FAST_POLL_INTERVAL="${FAST_POLL_INTERVAL:-10}"
 
 # Set to "true" to trigger a firmware WAN restart when the DOWN threshold
-# is exceeded. Disabled by default to avoid over-aggressive resets.
+# is exceeded.
+#
+# *** DISABLED BY DEFAULT ***
+# The exact definition of a "confirmed outage" is still under review.
+# Enabling this prematurely may cause unnecessary WAN bounces on transient
+# link flaps. Enable only when you understand the implications.
+# See README.md → "WAN Restart Trigger" for full details.
 RESTART_WAN="${RESTART_WAN:-false}"
 
 # Command executed to restart the WAN interface (primary unit 0).
@@ -158,22 +166,16 @@ nvram_commit() {
   return $?
 }
 
-# Write the primary NVRAM variables (wanduck_state + link_internet) and any
-# extras with the given state value.  For extra variables that specify their
-# own up/down values the appropriate per-variable value is used; otherwise
-# STATE_UP / STATE_DOWN is used.
+# Write the named NVRAM variables according to the given state.
+# Each variable is only written when its current value differs from the target,
+# and only committed to NVRAM when at least one value changed.
+# UP/DOWN values are hardcoded to match Asuswrt-Merlin firmware semantics.
 set_nvram_state() {
   # Usage: set_nvram_state <UP|DOWN>
   local targetState="$1"
-  local primaryVal
 
   case "${targetState}" in
-    UP)
-      primaryVal="${STATE_UP}"
-      ;;
-    DOWN)
-      primaryVal="${STATE_DOWN}"
-      ;;
+    UP|DOWN) ;;
     *)
       log_error "Invalid targetState '${targetState}' in set_nvram_state. Must be 'UP' or 'DOWN'."
       return 1
@@ -183,62 +185,60 @@ set_nvram_state() {
   local current
   local needCommit=0
 
-  # ---- NVRAM_VAR (wanduck_state) ----
-  current="$(nvram_get_val "${NVRAM_VAR}")"
-  if [ "${current}" != "${primaryVal}" ] ; then
-    log_debug "Setting NVRAM ${NVRAM_VAR}=${primaryVal} (was ${current})"
-    nvram_set_val "${NVRAM_VAR}" "${primaryVal}"
-    needCommit=1
-  fi
-
-  # ---- NVRAM_VAR2 — skip if empty ----
-  if [ -n "${NVRAM_VAR2}" ] ; then
-    local var2Val
-    if [ "${targetState}" = "UP" ] ; then
-      var2Val="${NVRAM_VAR2_UP}"
-    else
-      var2Val="${NVRAM_VAR2_DOWN}"
-    fi
-    current="$(nvram_get_val "${NVRAM_VAR2}")"
-    if [ "${current}" != "${var2Val}" ] ; then
-      log_debug "Setting NVRAM ${NVRAM_VAR2}=${var2Val} (was ${current})"
-      nvram_set_val "${NVRAM_VAR2}" "${var2Val}"
+  # ---- link_internet: 2=connected, 1=disconnected ----
+  if [ "${MANAGE_LINK_INTERNET}" = "true" ] ; then
+    local linkInternetVal; [ "${targetState}" = "UP" ] && linkInternetVal=2 || linkInternetVal=1
+    current="$(nvram_get_val link_internet)"
+    if [ "${current}" != "${linkInternetVal}" ] ; then
+      log_debug "Setting NVRAM link_internet=${linkInternetVal} (was ${current})"
+      nvram_set_val link_internet "${linkInternetVal}"
       needCommit=1
     fi
   fi
 
-  # ---- Extra variables ----
-  for entry in ${EXTRA_NVRAM_VARS} ; do
-    local varName upVal downVal value upDownPart downValPart
-    varName="${entry%%:*}"
-    upDownPart="${entry#*:}"
-    if [ "${upDownPart}" = "${entry}" ] ; then
-      # No colon — use global defaults
-      upVal="${STATE_UP}"
-      downVal="${STATE_DOWN}"
-    else
-      upVal="${upDownPart%%:*}"
-      downValPart="${upDownPart#*:}"
-      if [ "${downValPart}" = "${upDownPart}" ] ; then
-        downVal="${STATE_DOWN}"
-      else
-        downVal="${downValPart}"
-      fi
-    fi
-
-    if [ "${targetState}" = "UP" ] ; then
-      value="${upVal}"
-    else
-      value="${downVal}"
-    fi
-
-    current="$(nvram_get_val "${varName}")"
-    if [ "${current}" != "${value}" ] ; then
-      log_debug "Setting NVRAM ${varName}=${value} (was ${current})"
-      nvram_set_val "${varName}" "${value}"
+  # ---- wan0_state: 2=connected, 3=disconnected ----
+  if [ "${MANAGE_WAN0_STATE}" = "true" ] ; then
+    local wan0StateVal; [ "${targetState}" = "UP" ] && wan0StateVal=2 || wan0StateVal=3
+    current="$(nvram_get_val wan0_state)"
+    if [ "${current}" != "${wan0StateVal}" ] ; then
+      log_debug "Setting NVRAM wan0_state=${wan0StateVal} (was ${current})"
+      nvram_set_val wan0_state "${wan0StateVal}"
       needCommit=1
     fi
-  done
+  fi
+
+  # ---- wan0_realstate: 2=stable, 0=init/down ----
+  if [ "${MANAGE_WAN0_REALSTATE}" = "true" ] ; then
+    local wan0RealstateVal; [ "${targetState}" = "UP" ] && wan0RealstateVal=2 || wan0RealstateVal=0
+    current="$(nvram_get_val wan0_realstate)"
+    if [ "${current}" != "${wan0RealstateVal}" ] ; then
+      log_debug "Setting NVRAM wan0_realstate=${wan0RealstateVal} (was ${current})"
+      nvram_set_val wan0_realstate "${wan0RealstateVal}"
+      needCommit=1
+    fi
+  fi
+
+  # ---- wanduck_state: 1=active, 0=inactive ----
+  if [ "${MANAGE_WANDUCK_STATE}" = "true" ] ; then
+    local wanduckStateVal; [ "${targetState}" = "UP" ] && wanduckStateVal=1 || wanduckStateVal=0
+    current="$(nvram_get_val wanduck_state)"
+    if [ "${current}" != "${wanduckStateVal}" ] ; then
+      log_debug "Setting NVRAM wanduck_state=${wanduckStateVal} (was ${current})"
+      nvram_set_val wanduck_state "${wanduckStateVal}"
+      needCommit=1
+    fi
+  fi
+
+  # ---- wan0_auxstate: 0=no error, 2=no response from ISP ----
+  if [ "${MANAGE_WAN0_AUXSTATE}" = "true" ] ; then
+    local wan0AuxstateVal; [ "${targetState}" = "UP" ] && wan0AuxstateVal=0 || wan0AuxstateVal=2
+    current="$(nvram_get_val wan0_auxstate)"
+    if [ "${current}" != "${wan0AuxstateVal}" ] ; then
+      log_debug "Setting NVRAM wan0_auxstate=${wan0AuxstateVal} (was ${current})"
+      nvram_set_val wan0_auxstate "${wan0AuxstateVal}"
+      needCommit=1
+    fi
+  fi
 
   if [ "${needCommit}" -eq 1 ] ; then
     log_debug "Committing NVRAM changes"
@@ -275,13 +275,23 @@ _ping_check() {
   return 1
 }
 
-# Returns 0 if DNS_PROBE_HOST resolves successfully via nslookup.
+# Returns 0 if any host in DNS_PROBE_HOSTS (or DNS_PROBE_HOST fallback) resolves.
 _dns_check() {
-  if [ -z "${DNS_PROBE_HOST}" ] ; then
+  local targets
+  if [ -n "${DNS_PROBE_HOSTS}" ] ; then
+    targets="${DNS_PROBE_HOSTS}"
+  else
+    targets="${DNS_PROBE_HOST}"
+  fi
+  if [ -z "${targets}" ] ; then
     return 1
   fi
-  nslookup "${DNS_PROBE_HOST}" > /dev/null 2>&1
-  return $?
+  for host in ${targets} ; do
+    if nslookup "${host}" > /dev/null 2>&1 ; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 # Returns 0 (WAN considered UP) according to PROBE_MODE:
@@ -389,7 +399,7 @@ main() {
   trap 'release_lock' EXIT INT TERM
 
   log_debug "=== WanMoth starting (PID $$) ==="
-  log_debug "Targets: ${PING_TARGETS:-${PING_TARGET}}, probe=${PROBE_MODE}, NVRAM: ${NVRAM_VAR}, UP=${STATE_UP}, DOWN=${STATE_DOWN}"
+  log_debug "Ping targets: ${PING_TARGETS:-${PING_TARGET}}, DNS targets: ${DNS_PROBE_HOSTS:-${DNS_PROBE_HOST:-none}}, probe=${PROBE_MODE}"
 
   if wan_is_up ; then
     # ----- WAN is UP on entry -----
