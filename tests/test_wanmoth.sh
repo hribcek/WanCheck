@@ -232,12 +232,12 @@ assert_file_absent  "down_since file cleared" "${T}/wanmoth_down_since"
 rm -rf "$T"
 
 # =============================================================================
-# Test 3: WAN DOWN beyond threshold → STATE_DOWN committed, then UP on recovery
+# Test 3: WAN DOWN beyond threshold → STATE_DOWN written, then UP on recovery
 #         ping: fail, fail, fail, succeed
 #         epoch: 1000 (start), 1040 (>30s — threshold exceeded), 1040, 1040
 # =============================================================================
 echo ""
-echo "=== Test 3: WAN down beyond threshold → DOWN committed ==="
+echo "=== Test 3: WAN down beyond threshold → DOWN written to NVRAM ==="
 T="$(mktemp -d)"
 make_stubs "$T" "$(printf '1\n1\n1\n0')" "$(printf '1000\n1040\n1040\n1040\n1040')"
 run "$T"

@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `link_internet` DOWN value corrected from `0` to `1` (1=disconnected, not unknown)
 - `wanduck_state` UP value corrected from `2` to `1` (1=active; there is no state 2)
 - DNS probe now supports multiple hosts via `DNS_PROBE_HOSTS` (space-separated); single `DNS_PROBE_HOST` retained as deprecated fallback
+- `nvram commit` is no longer called after writing WAN state variables; `nvram set` is used exclusively so that no flash sectors are written during normal monitoring operation. WAN state variables are transient runtime indicators — the WebUI reads them live from memory and they do not need to survive a reboot. This avoids flash wear and the risk of configuration corruption on power loss (see `docs/research/ASUS Router NVRAM Commit Behaviour...`)
 
 ### Removed
 - `NVRAM_VAR`, `NVRAM_VAR2`, `STATE_UP`, `STATE_DOWN`, `NVRAM_VAR2_UP`, `NVRAM_VAR2_DOWN`: replaced by the specific `MANAGE_*` variables

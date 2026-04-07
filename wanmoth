@@ -160,16 +160,17 @@ nvram_set_val() {
   return $?
 }
 
-nvram_commit() {
-  # Usage: nvram_commit
-  nvram commit 2>/dev/null
-  return $?
-}
-
 # Write the named NVRAM variables according to the given state.
-# Each variable is only written when its current value differs from the target,
-# and only committed to NVRAM when at least one value changed.
+# Each variable is only written when its current value differs from the target.
 # UP/DOWN values are hardcoded to match Asuswrt-Merlin firmware semantics.
+#
+# nvram commit is intentionally NOT called here.
+# WAN state variables (link_internet, wan0_state, etc.) are transient runtime
+# indicators.  The WebUI reads them live from the in-memory NVRAM store; they
+# do not need to survive a reboot, so there is no reason to write them to
+# flash.  Calling nvram commit on every state change would cause unnecessary
+# flash wear and increase the risk of configuration corruption on power loss.
+# See docs/research/ASUS Router NVRAM Commit Behaviour... for full rationale.
 set_nvram_state() {
   # Usage: set_nvram_state <UP|DOWN>
   local targetState="$1"
@@ -183,7 +184,6 @@ set_nvram_state() {
   esac
 
   local current
-  local needCommit=0
 
   # ---- link_internet: 2=connected, 1=disconnected ----
   if [ "${MANAGE_LINK_INTERNET}" = "true" ] ; then
@@ -192,7 +192,6 @@ set_nvram_state() {
     if [ "${current}" != "${linkInternetVal}" ] ; then
       log_debug "Setting NVRAM link_internet=${linkInternetVal} (was ${current})"
       nvram_set_val link_internet "${linkInternetVal}"
-      needCommit=1
     fi
   fi
 
@@ -203,7 +202,6 @@ set_nvram_state() {
     if [ "${current}" != "${wan0StateVal}" ] ; then
       log_debug "Setting NVRAM wan0_state=${wan0StateVal} (was ${current})"
       nvram_set_val wan0_state "${wan0StateVal}"
-      needCommit=1
     fi
   fi
 
@@ -214,7 +212,6 @@ set_nvram_state() {
     if [ "${current}" != "${wan0RealstateVal}" ] ; then
       log_debug "Setting NVRAM wan0_realstate=${wan0RealstateVal} (was ${current})"
       nvram_set_val wan0_realstate "${wan0RealstateVal}"
-      needCommit=1
     fi
   fi
 
@@ -225,7 +222,6 @@ set_nvram_state() {
     if [ "${current}" != "${wanduckStateVal}" ] ; then
       log_debug "Setting NVRAM wanduck_state=${wanduckStateVal} (was ${current})"
       nvram_set_val wanduck_state "${wanduckStateVal}"
-      needCommit=1
     fi
   fi
 
@@ -236,13 +232,7 @@ set_nvram_state() {
     if [ "${current}" != "${wan0AuxstateVal}" ] ; then
       log_debug "Setting NVRAM wan0_auxstate=${wan0AuxstateVal} (was ${current})"
       nvram_set_val wan0_auxstate "${wan0AuxstateVal}"
-      needCommit=1
     fi
-  fi
-
-  if [ "${needCommit}" -eq 1 ] ; then
-    log_debug "Committing NVRAM changes"
-    nvram_commit
   fi
 }
 

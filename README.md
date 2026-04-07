@@ -1,11 +1,18 @@
 # WanMoth
 
-A lightweight, persistent WAN-connection monitoring script for
+A lightweight WAN-connection monitoring script for
 **Asuswrt-Merlin** routers. It probes connectivity via ICMP ping and/or DNS
 lookups against one or more configurable targets and keeps the key NVRAM state
 variables (`link_internet`, `wan0_state`, `wan0_realstate`, `wanduck_state`)
-accurately reflecting the WAN status — surviving reboots thanks to the
-router's JFFS2 persistent partition.
+accurately reflecting the WAN status in the router's in-memory NVRAM store.
+
+> **Note on NVRAM persistence**: these WAN state variables are transient
+> runtime indicators — the WebUI reads them live from memory and they do not
+> need to survive a reboot. WanMoth never calls `nvram commit`, so no flash
+> writes occur during normal operation. This avoids flash wear and the risk of
+> configuration corruption on power loss. See
+> `docs/research/ASUS Router NVRAM Commit Behaviour...` for the full
+> rationale.
 
 ---
 
@@ -14,6 +21,7 @@ router's JFFS2 persistent partition.
 | Feature | Detail |
 |---|---|
 | **Accurate state tracking** | NVRAM is only set to DOWN after a configurable silence threshold, preventing false alarms from brief transient blips |
+| **Flash-safe NVRAM writes** | Uses `nvram set` only — never `nvram commit` — so no flash sectors are written during normal operation, avoiding wear and corruption risk |
 | **Fast-polling during outages** | Switches to a tight check loop (default every 10 s) so recovery is detected and NVRAM is restored quickly |
 | **Multi-target probe** | `PING_TARGETS` accepts a space-separated list; WAN is considered UP as soon as any target responds |
 | **DNS probe support** | `DNS_PROBE_HOSTS` accepts a space-separated list of hostnames; set `PROBE_MODE=dns` (or `any`) to use DNS lookups alongside or instead of ICMP pings |
@@ -105,7 +113,7 @@ integrity.
 
 | Variable | Default | Description |
 |---|---|---|
-| `DOWN_THRESHOLD` | `60` | Seconds of continuous failure before DOWN is committed to NVRAM |
+| `DOWN_THRESHOLD` | `60` | Seconds of continuous failure before DOWN is written to NVRAM |
 | `FAST_POLL_INTERVAL` | `10` | Seconds between checks in fast-polling (outage) mode |
 
 ### WAN restart settings
