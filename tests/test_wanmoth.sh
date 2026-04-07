@@ -188,7 +188,7 @@ run() {
     export LOCK_FILE="${td}/wanmoth.lock"
     export STATE_FILE="${td}/wanmoth_down_since"
     export RESTART_FILE="${td}/wanmoth_last_restart"
-    export PING_TARGET=8.8.8.8
+    export PING_TARGETS=8.8.8.8
     export DOWN_THRESHOLD=30 FAST_POLL_INTERVAL=5
     # Allow callers to pass "VAR=value" pairs as extra arguments
     for kv in "$@"; do
@@ -352,7 +352,6 @@ rm -rf "$T"
 
 # =============================================================================
 # Test 10: DNS probe mode — PROBE_MODE=dns with a succeeding nslookup stub
-#          Uses deprecated DNS_PROBE_HOST single-host fallback.
 # =============================================================================
 echo ""
 echo "=== Test 10: DNS probe mode — nslookup succeeds → WAN UP ==="
@@ -361,7 +360,7 @@ make_stubs "$T" "1" "1000"   # ping always fails; nslookup will succeed
 # nslookup_rc defaults to 0 (success) in the stub — no file needed
 run "$T" \
   "PROBE_MODE=dns" \
-  "DNS_PROBE_HOST=connectivity-check.example.com"
+  "DNS_PROBE_HOSTS=connectivity-check.example.com"
 assert_equals       "wanduck_state=1 (UP via DNS)" "1" "$(nvram_val "$T" wanduck_state)"
 assert_log_contains "log: WAN UP via DNS"           "WAN UP" "${T}/wanmoth.log"
 rm -rf "$T"
@@ -445,6 +444,41 @@ assert_log_contains "dryrun file: probe config banner"     "probe config:"      
 assert_log_contains "dryrun file: NVRAM state banner"      "NVRAM state:"           "${T}/wanmoth_dryrun.log"
 assert_log_contains "dryrun file: ping probe result FAIL"  "Probe ping.*FAIL"       "${T}/wanmoth_dryrun.log"
 assert_file_absent  "service NOT called (dry-run)" "${T}/service.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 15: PROBE_MODE=all — ping AND DNS both pass → WAN UP
+# =============================================================================
+echo ""
+echo "=== Test 15: PROBE_MODE=all — ping OK, DNS OK → WAN UP ==="
+T="$(mktemp -d)"
+make_stubs "$T" "0" "1000"   # ping succeeds; nslookup succeeds (default rc=0)
+run "$T" \
+  "PROBE_MODE=all" \
+  "DNS_PROBE_HOSTS=dns.google"
+assert_equals       "wanduck_state=1 (all: both pass)" "1" "$(nvram_val "$T" wanduck_state)"
+assert_log_contains "log: WAN UP (all mode)"            "WAN UP" "${T}/wanmoth.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 16: PROBE_MODE=all — ping passes but DNS fails → WAN DOWN (dry-run pass)
+#          ping: succeed; DNS: fail
+#          epoch: 1000 (record_down_start), 1040 (threshold exceeded >30s)
+# =============================================================================
+echo ""
+echo "=== Test 16: PROBE_MODE=all — ping OK but DNS FAIL → WAN DOWN ==="
+T="$(mktemp -d)"
+make_stubs "$T" "0" "$(printf '1000\n1040')"
+echo "1" > "${T}/nslookup_rc"   # nslookup always fails
+run "$T" \
+  "PROBE_MODE=all" \
+  "DNS_PROBE_HOSTS=dns.google" \
+  "DRY_RUN=true" \
+  "DRY_RUN_LOG=${T}/wanmoth_dryrun.log"
+assert_log_contains "log: would commit DOWN (all mode)" "\[DRY-RUN\] Outage exceeds" "${T}/wanmoth.log"
+assert_equals       "wanduck_state not written (dry-run)" "" "$(nvram_val "$T" wanduck_state)"
+assert_log_contains "dryrun file: ping OK in all mode"   "Probe ping.*OK"  "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: dns FAIL in all mode"  "Probe dns.*FAIL" "${T}/wanmoth_dryrun.log"
 rm -rf "$T"
 
 # =============================================================================

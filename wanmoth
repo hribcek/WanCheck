@@ -26,11 +26,7 @@
 # Space-separated list of IPs or hostnames to ping for WAN verification.
 # The probe passes as soon as ANY target responds; all must fail for DOWN.
 # Example:  PING_TARGETS="1.0.0.1 8.8.8.8 9.9.9.9"
-PING_TARGETS="${PING_TARGETS:-}"
-
-# Deprecated: single-target alias kept for backwards compatibility.
-# If PING_TARGETS is unset, PING_TARGET is used instead.
-PING_TARGET="${PING_TARGET:-1.0.0.1}"
+PING_TARGETS="${PING_TARGETS:-1.0.0.1 8.8.4.4}"
 
 # Number of ICMP echo requests to send per ping attempt
 PING_COUNT="${PING_COUNT:-3}"
@@ -41,17 +37,14 @@ PING_TIMEOUT="${PING_TIMEOUT:-3}"
 # Space-separated list of hostnames to resolve as DNS connectivity probes.
 # The probe passes as soon as ANY host resolves; all must fail for DOWN.
 # Example:  DNS_PROBE_HOSTS="dns.google connectivity-check.example.com"
-# Leave empty (default) to disable DNS probing.
-DNS_PROBE_HOSTS="${DNS_PROBE_HOSTS:-}"
-
-# Deprecated: single-host alias kept for backwards compatibility.
-# If DNS_PROBE_HOSTS is unset, DNS_PROBE_HOST is used instead.
-DNS_PROBE_HOST="${DNS_PROBE_HOST:-}"
+# Leave empty to disable DNS probing (default when PROBE_MODE=ping).
+DNS_PROBE_HOSTS="${DNS_PROBE_HOSTS:-dns.google one.one.one.one}"
 
 # Probe strategy:
 #   ping  — ICMP ping only (default)
 #   dns   — DNS lookup only (requires DNS_PROBE_HOSTS)
 #   any   — pass if ping OR DNS succeeds
+#   all   — pass only if BOTH ping AND DNS succeed
 PROBE_MODE="${PROBE_MODE:-ping}"
 
 # ---------------------------------------------------------------------------
@@ -150,7 +143,7 @@ log_dryrun() {
 # log_dryrun_context: snapshot the current NVRAM WAN state and probe settings.
 # Called once at startup in dry-run mode so each log entry is self-contained.
 log_dryrun_context() {
-  log_dryrun "--- probe config: mode=${PROBE_MODE} ping_targets=${PING_TARGETS:-${PING_TARGET}} dns_targets=${DNS_PROBE_HOSTS:-${DNS_PROBE_HOST:-none}} ---"
+  log_dryrun "--- probe config: mode=${PROBE_MODE} ping_targets=${PING_TARGETS} dns_targets=${DNS_PROBE_HOSTS:-none} ---"
   local li ws wr wdk waux
   li="$(nvram_get_val link_internet)"
   ws="$(nvram_get_val wan0_state)"
@@ -294,15 +287,9 @@ is_other_script_running() {
 # Connectivity check
 # ---------------------------------------------------------------------------
 
-# Returns 0 if any host in PING_TARGETS (or PING_TARGET fallback) responds.
+# Returns 0 if any host in PING_TARGETS responds.
 _ping_check() {
-  local targets
-  if [ -n "${PING_TARGETS}" ] ; then
-    targets="${PING_TARGETS}"
-  else
-    targets="${PING_TARGET}"
-  fi
-  for target in ${targets} ; do
+  for target in ${PING_TARGETS} ; do
     if ping -c "${PING_COUNT}" -W "${PING_TIMEOUT}" "${target}" > /dev/null 2>&1 ; then
       [ "${DRY_RUN}" = "true" ] && log_dryrun "Probe ping ${target}: OK"
       return 0
@@ -312,18 +299,12 @@ _ping_check() {
   return 1
 }
 
-# Returns 0 if any host in DNS_PROBE_HOSTS (or DNS_PROBE_HOST fallback) resolves.
+# Returns 0 if any host in DNS_PROBE_HOSTS resolves.
 _dns_check() {
-  local targets
-  if [ -n "${DNS_PROBE_HOSTS}" ] ; then
-    targets="${DNS_PROBE_HOSTS}"
-  else
-    targets="${DNS_PROBE_HOST}"
-  fi
-  if [ -z "${targets}" ] ; then
+  if [ -z "${DNS_PROBE_HOSTS}" ] ; then
     return 1
   fi
-  for host in ${targets} ; do
+  for host in ${DNS_PROBE_HOSTS} ; do
     if nslookup "${host}" > /dev/null 2>&1 ; then
       [ "${DRY_RUN}" = "true" ] && log_dryrun "Probe dns ${host}: OK"
       return 0
@@ -334,9 +315,10 @@ _dns_check() {
 }
 
 # Returns 0 (WAN considered UP) according to PROBE_MODE:
-#   ping — ICMP ping only (default)
-#   dns  — DNS lookup only
-#   any  — pass if ping OR DNS succeeds
+#   ping  — ICMP ping only (default)
+#   dns   — DNS lookup only
+#   any   — pass if ping OR DNS succeeds
+#   all   — pass only if BOTH ping AND DNS succeed
 wan_is_up() {
   case "${PROBE_MODE}" in
     dns)
@@ -344,6 +326,9 @@ wan_is_up() {
       ;;
     any)
       _ping_check || _dns_check
+      ;;
+    all)
+      _ping_check && _dns_check
       ;;
     ping|*)
       _ping_check
@@ -443,7 +428,7 @@ main() {
   trap 'release_lock' EXIT INT TERM
 
   log_debug "=== WanMoth starting (PID $$) ==="
-  log_debug "Ping targets: ${PING_TARGETS:-${PING_TARGET}}, DNS targets: ${DNS_PROBE_HOSTS:-${DNS_PROBE_HOST:-none}}, probe=${PROBE_MODE}"
+  log_debug "Ping targets: ${PING_TARGETS}, DNS targets: ${DNS_PROBE_HOSTS:-none}, probe=${PROBE_MODE}"
   [ "${DRY_RUN}" = "true" ] && log_info "[DRY-RUN] mode active — no NVRAM writes or WAN restarts will occur."
   [ "${DRY_RUN}" = "true" ] && log_dryrun_context
 
