@@ -102,6 +102,23 @@ RESTART_WAN_CMD="${RESTART_WAN_CMD:-service restart_wan_if 0}"
 RESTART_COOLDOWN="${RESTART_COOLDOWN:-300}"
 
 # ---------------------------------------------------------------------------
+# Dry-run mode — observe without side-effects
+# ---------------------------------------------------------------------------
+
+# Set to "true" to enable dry-run mode.  All probes run normally; NVRAM writes
+# and WAN restarts are replaced by log entries.  When run from cron, the script
+# exits after a single probe instead of spinning in the fast-polling loop so
+# each invocation is stateless from the scheduler's perspective.
+#
+# Tip: drop this into your crontab to monitor what wanmoth would do:
+#   cru a wanmoth "*/5 * * * * DRY_RUN=true /jffs/scripts/wanmoth"
+DRY_RUN="${DRY_RUN:-false}"
+
+# File to which dry-run action lines are appended (in addition to syslog).
+# Set to empty to disable file logging and use syslog only.
+DRY_RUN_LOG="${DRY_RUN_LOG:-/tmp/wanmoth_dryrun.log}"
+
+# ---------------------------------------------------------------------------
 # Internal constants — normally no need to change these
 # ---------------------------------------------------------------------------
 otherScriptName="wanduck"  # If this process is running, defer to it and exit immediately
@@ -118,6 +135,17 @@ log_debug() { logger -t "${scriptName}" -p daemon.debug "$*"; }
 log_info()  { logger -t "${scriptName}" -p daemon.info  "$*"; }
 log_warn()  { logger -t "${scriptName}" -p daemon.warn  "$*"; }
 log_error() { logger -t "${scriptName}" -p daemon.err   "$*"; }
+
+# log_dryrun: emit a "[DRY-RUN] would do X" entry to syslog (info) and,
+# when DRY_RUN_LOG is non-empty, append a timestamped line to that file.
+log_dryrun() {
+  log_info "[DRY-RUN] $*"
+  if [ -n "${DRY_RUN_LOG}" ] ; then
+    local ts
+    ts="$(date '+%Y-%m-%d %H:%M:%S')"
+    printf '%s [%s] %s\n' "${ts}" "${scriptName}" "$*" >> "${DRY_RUN_LOG}"
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # Lock helpers — prevent overlapping cron invocations
@@ -155,6 +183,10 @@ nvram_set_val() {
   if [ $# -ne 2 ] || [ -z "$1" ] || [ -z "$2" ]; then
     log_error "nvram_set_val requires exactly 2 non-empty arguments: variable and value"
     return 1
+  fi
+  if [ "${DRY_RUN}" = "true" ] ; then
+    log_dryrun "Would set NVRAM ${1}=${2}"
+    return 0
   fi
   nvram set "${1}=${2}" 2>/dev/null
   return $?
@@ -327,6 +359,11 @@ maybe_restart_wan() {
     fi
   fi
 
+  if [ "${DRY_RUN}" = "true" ] ; then
+    log_dryrun "Would trigger WAN restart: ${RESTART_WAN_CMD}"
+    return 0
+  fi
+
   log_warn "Triggering WAN restart: ${RESTART_WAN_CMD}"
   echo "${now}" > "${RESTART_FILE}"
   ${RESTART_WAN_CMD}
@@ -390,6 +427,7 @@ main() {
 
   log_debug "=== WanMoth starting (PID $$) ==="
   log_debug "Ping targets: ${PING_TARGETS:-${PING_TARGET}}, DNS targets: ${DNS_PROBE_HOSTS:-${DNS_PROBE_HOST:-none}}, probe=${PROBE_MODE}"
+  [ "${DRY_RUN}" = "true" ] && log_info "[DRY-RUN] mode active — no NVRAM writes or WAN restarts will occur."
 
   if wan_is_up ; then
     # ----- WAN is UP on entry -----
@@ -398,20 +436,19 @@ main() {
     set_nvram_state UP
   else
     # ----- WAN appears DOWN -----
-    log_warn "WAN DOWN — entering fast-polling loop (interval=${FAST_POLL_INTERVAL}s, threshold=${DOWN_THRESHOLD}s)."
+    if [ "${DRY_RUN}" = "true" ] ; then
+      log_warn "WAN DOWN (dry-run mode — single probe pass, threshold=${DOWN_THRESHOLD}s)."
+    else
+      log_warn "WAN DOWN — entering fast-polling loop (interval=${FAST_POLL_INTERVAL}s, threshold=${DOWN_THRESHOLD}s)."
+    fi
     record_down_start
 
-    while true ; do
-      if wan_is_up ; then
-        log_info "WAN recovered."
-        clear_down_start
-        set_nvram_state UP
-        break
-      fi
-
-      # Still down — check threshold
+    if [ "${DRY_RUN}" = "true" ] ; then
+      # Dry-run / cron mode: do one pass, log what would happen, then exit.
+      # Relies on STATE_FILE persisting across cron invocations to accumulate
+      # elapsed time; the threshold is crossed on a later cron tick.
       if down_threshold_exceeded ; then
-        log_warn "Outage exceeded ${DOWN_THRESHOLD}s threshold. Committing DOWN state to NVRAM."
+        log_warn "[DRY-RUN] Outage exceeds ${DOWN_THRESHOLD}s threshold — would commit DOWN state to NVRAM."
         set_nvram_state DOWN
         maybe_restart_wan
       else
@@ -421,9 +458,31 @@ main() {
         remaining=$(( DOWN_THRESHOLD - elapsed ))
         log_debug "Still down (${elapsed}s elapsed, ${remaining}s until NVRAM commit)."
       fi
+    else
+      while true ; do
+        if wan_is_up ; then
+          log_info "WAN recovered."
+          clear_down_start
+          set_nvram_state UP
+          break
+        fi
 
-      sleep "${FAST_POLL_INTERVAL}"
-    done
+        # Still down — check threshold
+        if down_threshold_exceeded ; then
+          log_warn "Outage exceeded ${DOWN_THRESHOLD}s threshold. Committing DOWN state to NVRAM."
+          set_nvram_state DOWN
+          maybe_restart_wan
+        else
+          local start elapsed remaining
+          start="$(down_start_epoch)"
+          elapsed=$(( $(date '+%s') - start ))
+          remaining=$(( DOWN_THRESHOLD - elapsed ))
+          log_debug "Still down (${elapsed}s elapsed, ${remaining}s until NVRAM commit)."
+        fi
+
+        sleep "${FAST_POLL_INTERVAL}"
+      done
+    fi
   fi
 
   log_debug "=== WanMoth done ==="

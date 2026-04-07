@@ -399,6 +399,49 @@ assert_log_contains "log: WAN UP"                              "WAN UP" "${T}/wa
 rm -rf "$T"
 
 # =============================================================================
+# Test 13: DRY_RUN=true, WAN UP — NVRAM not written, dry-run log emitted
+#          In dry-run mode nvram_set_val must log rather than write.
+# =============================================================================
+echo ""
+echo "=== Test 13: DRY_RUN=true, WAN UP — NVRAM skipped, dry-run log written ==="
+T="$(mktemp -d)"
+make_stubs "$T" "0" "1000"
+run "$T" \
+  "DRY_RUN=true" \
+  "DRY_RUN_LOG=${T}/wanmoth_dryrun.log"
+assert_equals       "wanduck_state not written (dry-run)" "" "$(nvram_val "$T" wanduck_state)"
+assert_equals       "link_internet not written (dry-run)" "" "$(nvram_val "$T" link_internet)"
+assert_log_contains "log: DRY-RUN mode active"            "\[DRY-RUN\] mode active"     "${T}/wanmoth.log"
+assert_log_contains "log: would set wanduck_state=1"      "Would set NVRAM wanduck_state=1" "${T}/wanmoth.log"
+assert_log_contains "dryrun file: would set wanduck_state" "Would set NVRAM wanduck_state=1" "${T}/wanmoth_dryrun.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 14: DRY_RUN=true, WAN DOWN, threshold exceeded — no NVRAM write,
+#          no polling loop; logs "would commit DOWN" and dry-run restart skip.
+#          ping: fail (1)
+#          epoch: 1000 (record_down_start), 1040 (down_threshold_exceeded; >30s)
+# =============================================================================
+echo ""
+echo "=== Test 14: DRY_RUN=true, WAN DOWN, threshold exceeded — exits after one pass ==="
+T="$(mktemp -d)"
+make_stubs "$T" "1" "$(printf '1000\n1040')"
+run "$T" \
+  "DRY_RUN=true" \
+  "DRY_RUN_LOG=${T}/wanmoth_dryrun.log" \
+  "RESTART_WAN=true" \
+  "RESTART_WAN_CMD=service restart_wan_if 0" \
+  "RESTART_COOLDOWN=300"
+assert_equals       "wanduck_state not written (dry-run DOWN)" "" "$(nvram_val "$T" wanduck_state)"
+assert_log_contains "log: WAN DOWN dry-run"       "dry-run mode" "${T}/wanmoth.log"
+assert_log_contains "log: would commit DOWN"      "\[DRY-RUN\] Outage exceeds" "${T}/wanmoth.log"
+assert_log_contains "log: would set wanduck_state=0" "Would set NVRAM wanduck_state=0" "${T}/wanmoth.log"
+assert_log_contains "log: would trigger restart"  "Would trigger WAN restart" "${T}/wanmoth.log"
+assert_log_contains "dryrun file: would set wanduck_state" "Would set NVRAM wanduck_state=0" "${T}/wanmoth_dryrun.log"
+assert_file_absent  "service NOT called (dry-run)" "${T}/service.log"
+rm -rf "$T"
+
+# =============================================================================
 # Summary
 # =============================================================================
 echo ""
