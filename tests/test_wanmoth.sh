@@ -414,6 +414,9 @@ assert_equals       "link_internet not written (dry-run)" "" "$(nvram_val "$T" l
 assert_log_contains "log: DRY-RUN mode active"            "\[DRY-RUN\] mode active"     "${T}/wanmoth.log"
 assert_log_contains "log: would set wanduck_state=1"      "Would set NVRAM wanduck_state=1" "${T}/wanmoth.log"
 assert_log_contains "dryrun file: would set wanduck_state" "Would set NVRAM wanduck_state=1" "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: probe config banner"    "probe config:"          "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: NVRAM state banner"     "NVRAM state:"           "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: ping probe result OK"   "Probe ping.*OK"         "${T}/wanmoth_dryrun.log"
 rm -rf "$T"
 
 # =============================================================================
@@ -438,6 +441,9 @@ assert_log_contains "log: would commit DOWN"      "\[DRY-RUN\] Outage exceeds" "
 assert_log_contains "log: would set wanduck_state=0" "Would set NVRAM wanduck_state=0" "${T}/wanmoth.log"
 assert_log_contains "log: would trigger restart"  "Would trigger WAN restart" "${T}/wanmoth.log"
 assert_log_contains "dryrun file: would set wanduck_state" "Would set NVRAM wanduck_state=0" "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: probe config banner"     "probe config:"          "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: NVRAM state banner"      "NVRAM state:"           "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: ping probe result FAIL"  "Probe ping.*FAIL"       "${T}/wanmoth_dryrun.log"
 assert_file_absent  "service NOT called (dry-run)" "${T}/service.log"
 rm -rf "$T"
 

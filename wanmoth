@@ -147,6 +147,19 @@ log_dryrun() {
   fi
 }
 
+# log_dryrun_context: snapshot the current NVRAM WAN state and probe settings.
+# Called once at startup in dry-run mode so each log entry is self-contained.
+log_dryrun_context() {
+  log_dryrun "--- probe config: mode=${PROBE_MODE} ping_targets=${PING_TARGETS:-${PING_TARGET}} dns_targets=${DNS_PROBE_HOSTS:-${DNS_PROBE_HOST:-none}} ---"
+  local li ws wr wdk waux
+  li="$(nvram_get_val link_internet)"
+  ws="$(nvram_get_val wan0_state)"
+  wr="$(nvram_get_val wan0_realstate)"
+  wdk="$(nvram_get_val wanduck_state)"
+  waux="$(nvram_get_val wan0_auxstate)"
+  log_dryrun "--- NVRAM state: link_internet=${li} wan0_state=${ws} wan0_realstate=${wr} wanduck_state=${wdk} wan0_auxstate=${waux} ---"
+}
+
 # ---------------------------------------------------------------------------
 # Lock helpers — prevent overlapping cron invocations
 # ---------------------------------------------------------------------------
@@ -291,8 +304,10 @@ _ping_check() {
   fi
   for target in ${targets} ; do
     if ping -c "${PING_COUNT}" -W "${PING_TIMEOUT}" "${target}" > /dev/null 2>&1 ; then
+      [ "${DRY_RUN}" = "true" ] && log_dryrun "Probe ping ${target}: OK"
       return 0
     fi
+    [ "${DRY_RUN}" = "true" ] && log_dryrun "Probe ping ${target}: FAIL"
   done
   return 1
 }
@@ -310,8 +325,10 @@ _dns_check() {
   fi
   for host in ${targets} ; do
     if nslookup "${host}" > /dev/null 2>&1 ; then
+      [ "${DRY_RUN}" = "true" ] && log_dryrun "Probe dns ${host}: OK"
       return 0
     fi
+    [ "${DRY_RUN}" = "true" ] && log_dryrun "Probe dns ${host}: FAIL"
   done
   return 1
 }
@@ -428,6 +445,7 @@ main() {
   log_debug "=== WanMoth starting (PID $$) ==="
   log_debug "Ping targets: ${PING_TARGETS:-${PING_TARGET}}, DNS targets: ${DNS_PROBE_HOSTS:-${DNS_PROBE_HOST:-none}}, probe=${PROBE_MODE}"
   [ "${DRY_RUN}" = "true" ] && log_info "[DRY-RUN] mode active — no NVRAM writes or WAN restarts will occur."
+  [ "${DRY_RUN}" = "true" ] && log_dryrun_context
 
   if wan_is_up ; then
     # ----- WAN is UP on entry -----
