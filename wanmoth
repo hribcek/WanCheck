@@ -3,8 +3,10 @@
 # =============================================================================
 # wanmoth — WAN Connection Monitor for Asuswrt-Merlin
 # =============================================================================
-# Monitors WAN connectivity by pinging a configurable target and keeps
-# NVRAM state variables (wanduck_state, link_internet, + any extras) in sync.
+# Monitors WAN connectivity via ICMP ping and/or DNS probes against one or
+# more configurable targets and keeps NVRAM state variables (link_internet,
+# wan0_state, wan0_realstate, wan0_auxstate, wanduck_state) in sync with the
+# actual connection state.
 #
 # Intended deployment:  /jffs/scripts/wanmoth
 # Cron schedule (normal): every 5 minutes via the Merlin cru helper
@@ -12,15 +14,19 @@
 #
 # During an outage the script enters a fast-polling loop and only commits
 # a DOWN state to NVRAM after DOWN_THRESHOLD seconds have elapsed without
-# a successful ping, preventing false alarms from short transient blips.
+# a successful probe, preventing false alarms from short transient blips.
+# If RESTART_WAN=true the script will also call RESTART_WAN_CMD once per
+# RESTART_COOLDOWN window to ask the firmware to re-establish the link.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
 # Configuration — edit to suit your environment
 # ---------------------------------------------------------------------------
 
-# IP or hostname to ping for WAN verification
-PING_TARGET="${PING_TARGET:-1.0.0.1}"
+# Space-separated list of IPs or hostnames to ping for WAN verification.
+# The probe passes as soon as ANY target responds; all must fail for DOWN.
+# Example:  PING_TARGETS="1.0.0.1 8.8.8.8 9.9.9.9"
+PING_TARGETS="${PING_TARGETS:-1.0.0.1 8.8.4.4}"
 
 # Number of ICMP echo requests to send per ping attempt
 PING_COUNT="${PING_COUNT:-3}"
@@ -28,30 +34,82 @@ PING_COUNT="${PING_COUNT:-3}"
 # Seconds to wait for each ping response
 PING_TIMEOUT="${PING_TIMEOUT:-3}"
 
-# Primary NVRAM variable whose value reflects WAN status
-NVRAM_VAR="${NVRAM_VAR:-wanduck_state}"
+# Space-separated list of hostnames to resolve as DNS connectivity probes.
+# The probe passes as soon as ANY host resolves; all must fail for DOWN.
+# Example:  DNS_PROBE_HOSTS="dns.google connectivity-check.example.com"
+# Leave empty to disable DNS probing (default when PROBE_MODE=ping).
+DNS_PROBE_HOSTS="${DNS_PROBE_HOSTS:-dns.google one.one.one.one}"
 
-# Second primary NVRAM variable that also reflects WAN/internet status.
-# Set to an empty string to disable management of this variable.
-NVRAM_VAR2="${NVRAM_VAR2:-link_internet}"
+# Probe strategy:
+#   ping  — ICMP ping only (default)
+#   dns   — DNS lookup only (requires DNS_PROBE_HOSTS)
+#   any   — pass if ping OR DNS succeeds
+#   all   — pass only if BOTH ping AND DNS succeed
+PROBE_MODE="${PROBE_MODE:-ping}"
 
-# NVRAM integer value that represents the connected (UP) state
-STATE_UP="${STATE_UP:-2}"
+# ---------------------------------------------------------------------------
+# NVRAM management — each variable is individually enabled or disabled.
+# Values are hardcoded to match Asuswrt-Merlin firmware semantics exactly.
+# See the NVRAM Reference section in README.md for details.
+# ---------------------------------------------------------------------------
 
-# NVRAM integer value that represents the disconnected (DOWN) state
-STATE_DOWN="${STATE_DOWN:-0}"
+# link_internet: WebUI globe icon — 2=connected, 1=disconnected
+MANAGE_LINK_INTERNET="${MANAGE_LINK_INTERNET:-true}"
 
-# Space-separated list of additional NVRAM variables to keep in sync.
-# Each entry may optionally carry per-variable up/down overrides using
-# the format  "varname:up_val:down_val"  (colon-separated).
-# Example:  EXTRA_NVRAM_VARS="wan0_state_t:2:0 custom_flag:1:0"
-EXTRA_NVRAM_VARS="${EXTRA_NVRAM_VARS:-}"
+# wan0_state: WAN0 logical state — 2=connected, 3=disconnected
+MANAGE_WAN0_STATE="${MANAGE_WAN0_STATE:-true}"
+
+# wan0_realstate: WAN0 physical link state — 2=stable, 0=init/down
+MANAGE_WAN0_REALSTATE="${MANAGE_WAN0_REALSTATE:-true}"
+
+# wanduck_state: watchdog daemon active — 1=active, 0=inactive
+MANAGE_WANDUCK_STATE="${MANAGE_WANDUCK_STATE:-true}"
+
+# wan0_auxstate: WAN0 error sub-state — 0=no error, 2=no response from ISP
+# Disabled by default because the correct DOWN value is ISP-protocol-specific
+# (PPPoE auth failures use 1; DHCP timeouts use 2). Enable only when you know
+# which value your ISP link type requires.
+MANAGE_WAN0_AUXSTATE="${MANAGE_WAN0_AUXSTATE:-false}"
 
 # Seconds a WAN outage must persist before STATE_DOWN is written to NVRAM
 DOWN_THRESHOLD="${DOWN_THRESHOLD:-60}"
 
 # Seconds between connectivity checks while in fast-polling (outage) mode
 FAST_POLL_INTERVAL="${FAST_POLL_INTERVAL:-10}"
+
+# Set to "true" to trigger a firmware WAN restart when the DOWN threshold
+# is exceeded.
+#
+# *** DISABLED BY DEFAULT ***
+# The exact definition of a "confirmed outage" is still under review.
+# Enabling this prematurely may cause unnecessary WAN bounces on transient
+# link flaps. Enable only when you understand the implications.
+# See README.md → "WAN Restart Trigger" for full details.
+RESTART_WAN="${RESTART_WAN:-false}"
+
+# Command executed to restart the WAN interface (primary unit 0).
+RESTART_WAN_CMD="${RESTART_WAN_CMD:-service restart_wan_if 0}"
+
+# Minimum seconds that must pass between successive WAN restart triggers.
+# Prevents back-to-back restarts on transient link flaps.
+RESTART_COOLDOWN="${RESTART_COOLDOWN:-300}"
+
+# ---------------------------------------------------------------------------
+# Dry-run mode — observe without side-effects
+# ---------------------------------------------------------------------------
+
+# Set to "true" to enable dry-run mode.  All probes run normally; NVRAM writes
+# and WAN restarts are replaced by log entries.  When run from cron, the script
+# exits after a single probe instead of spinning in the fast-polling loop so
+# each invocation is stateless from the scheduler's perspective.
+#
+# Tip: drop this into your crontab to monitor what wanmoth would do:
+#   cru a wanmoth "*/5 * * * * DRY_RUN=true /jffs/scripts/wanmoth"
+DRY_RUN="${DRY_RUN:-false}"
+
+# File to which dry-run action lines are appended (in addition to syslog).
+# Set to empty to disable file logging and use syslog only.
+DRY_RUN_LOG="${DRY_RUN_LOG:-/tmp/wanmoth_dryrun.log}"
 
 # ---------------------------------------------------------------------------
 # Internal constants — normally no need to change these
@@ -60,6 +118,7 @@ otherScriptName="wanduck"  # If this process is running, defer to it and exit im
 scriptName="wanmoth"
 LOCK_FILE="${LOCK_FILE:-/tmp/${scriptName}.lock}"
 STATE_FILE="${STATE_FILE:-/tmp/${scriptName}_down_since}"
+RESTART_FILE="${RESTART_FILE:-/tmp/${scriptName}_last_restart}"
 
 # ---------------------------------------------------------------------------
 # Logging helpers — write to syslog via BusyBox logger
@@ -69,6 +128,30 @@ log_debug() { logger -t "${scriptName}" -p daemon.debug "$*"; }
 log_info()  { logger -t "${scriptName}" -p daemon.info  "$*"; }
 log_warn()  { logger -t "${scriptName}" -p daemon.warn  "$*"; }
 log_error() { logger -t "${scriptName}" -p daemon.err   "$*"; }
+
+# log_dryrun: emit a "[DRY-RUN] would do X" entry to syslog (info) and,
+# when DRY_RUN_LOG is non-empty, append a timestamped line to that file.
+log_dryrun() {
+  log_info "[DRY-RUN] $*"
+  if [ -n "${DRY_RUN_LOG}" ] ; then
+    local ts
+    ts="$(date '+%Y-%m-%d %H:%M:%S')"
+    printf '%s [%s] %s\n' "${ts}" "${scriptName}" "$*" >> "${DRY_RUN_LOG}"
+  fi
+}
+
+# log_dryrun_context: snapshot the current NVRAM WAN state and probe settings.
+# Called once at startup in dry-run mode so each log entry is self-contained.
+log_dryrun_context() {
+  log_dryrun "--- probe config: mode=${PROBE_MODE} ping_targets=${PING_TARGETS} dns_targets=${DNS_PROBE_HOSTS:-none} ---"
+  local li ws wr wdk waux
+  li="$(nvram_get_val link_internet)"
+  ws="$(nvram_get_val wan0_state)"
+  wr="$(nvram_get_val wan0_realstate)"
+  wdk="$(nvram_get_val wanduck_state)"
+  waux="$(nvram_get_val wan0_auxstate)"
+  log_dryrun "--- NVRAM state: link_internet=${li} wan0_state=${ws} wan0_realstate=${wr} wanduck_state=${wdk} wan0_auxstate=${waux} ---"
+}
 
 # ---------------------------------------------------------------------------
 # Lock helpers — prevent overlapping cron invocations
@@ -107,32 +190,31 @@ nvram_set_val() {
     log_error "nvram_set_val requires exactly 2 non-empty arguments: variable and value"
     return 1
   fi
+  if [ "${DRY_RUN}" = "true" ] ; then
+    log_dryrun "Would set NVRAM ${1}=${2}"
+    return 0
+  fi
   nvram set "${1}=${2}" 2>/dev/null
   return $?
 }
 
-nvram_commit() {
-  # Usage: nvram_commit
-  nvram commit 2>/dev/null
-  return $?
-}
-
-# Write the primary NVRAM variables (wanduck_state + link_internet) and any
-# extras with the given state value.  For extra variables that specify their
-# own up/down values the appropriate per-variable value is used; otherwise
-# STATE_UP / STATE_DOWN is used.
+# Write the named NVRAM variables according to the given state.
+# Each variable is only written when its current value differs from the target.
+# UP/DOWN values are hardcoded to match Asuswrt-Merlin firmware semantics.
+#
+# nvram commit is intentionally NOT called here.
+# WAN state variables (link_internet, wan0_state, etc.) are transient runtime
+# indicators.  The WebUI reads them live from the in-memory NVRAM store; they
+# do not need to survive a reboot, so there is no reason to write them to
+# flash.  Calling nvram commit on every state change would cause unnecessary
+# flash wear and increase the risk of configuration corruption on power loss.
+# See docs/research/ASUS Router NVRAM Commit Behaviour... for full rationale.
 set_nvram_state() {
   # Usage: set_nvram_state <UP|DOWN>
   local targetState="$1"
-  local primaryVal
 
   case "${targetState}" in
-    UP)
-      primaryVal="${STATE_UP}"
-      ;;
-    DOWN)
-      primaryVal="${STATE_DOWN}"
-      ;;
+    UP|DOWN) ;;
     *)
       log_error "Invalid targetState '${targetState}' in set_nvram_state. Must be 'UP' or 'DOWN'."
       return 1
@@ -140,62 +222,55 @@ set_nvram_state() {
   esac
 
   local current
-  local needCommit=0
 
-  # ---- NVRAM_VAR (wanduck_state) ----
-  current="$(nvram_get_val "${NVRAM_VAR}")"
-  if [ "${current}" != "${primaryVal}" ] ; then
-    log_debug "Setting NVRAM ${NVRAM_VAR}=${primaryVal} (was ${current})"
-    nvram_set_val "${NVRAM_VAR}" "${primaryVal}"
-    needCommit=1
-  fi
-
-  # ---- NVRAM_VAR2 (link_internet) — skip if empty ----
-  if [ -n "${NVRAM_VAR2}" ] ; then
-    current="$(nvram_get_val "${NVRAM_VAR2}")"
-    if [ "${current}" != "${primaryVal}" ] ; then
-      log_debug "Setting NVRAM ${NVRAM_VAR2}=${primaryVal} (was ${current})"
-      nvram_set_val "${NVRAM_VAR2}" "${primaryVal}"
-      needCommit=1
+  # ---- link_internet: 2=connected, 1=disconnected ----
+  if [ "${MANAGE_LINK_INTERNET}" = "true" ] ; then
+    local linkInternetVal; [ "${targetState}" = "UP" ] && linkInternetVal=2 || linkInternetVal=1
+    current="$(nvram_get_val link_internet)"
+    if [ "${current}" != "${linkInternetVal}" ] ; then
+      log_debug "Setting NVRAM link_internet=${linkInternetVal} (was ${current})"
+      nvram_set_val link_internet "${linkInternetVal}"
     fi
   fi
 
-  # ---- Extra variables ----
-  for entry in ${EXTRA_NVRAM_VARS} ; do
-    local varName upVal downVal value upDownPart downValPart
-    varName="${entry%%:*}"
-    upDownPart="${entry#*:}"
-    if [ "${upDownPart}" = "${entry}" ] ; then
-      # No colon — use global defaults
-      upVal="${STATE_UP}"
-      downVal="${STATE_DOWN}"
-    else
-      upVal="${upDownPart%%:*}"
-      downValPart="${upDownPart#*:}"
-      if [ "${downValPart}" = "${upDownPart}" ] ; then
-        downVal="${STATE_DOWN}"
-      else
-        downVal="${downValPart}"
-      fi
+  # ---- wan0_state: 2=connected, 3=disconnected ----
+  if [ "${MANAGE_WAN0_STATE}" = "true" ] ; then
+    local wan0StateVal; [ "${targetState}" = "UP" ] && wan0StateVal=2 || wan0StateVal=3
+    current="$(nvram_get_val wan0_state)"
+    if [ "${current}" != "${wan0StateVal}" ] ; then
+      log_debug "Setting NVRAM wan0_state=${wan0StateVal} (was ${current})"
+      nvram_set_val wan0_state "${wan0StateVal}"
     fi
+  fi
 
-    if [ "${targetState}" = "UP" ] ; then
-      value="${upVal}"
-    else
-      value="${downVal}"
+  # ---- wan0_realstate: 2=stable, 0=init/down ----
+  if [ "${MANAGE_WAN0_REALSTATE}" = "true" ] ; then
+    local wan0RealstateVal; [ "${targetState}" = "UP" ] && wan0RealstateVal=2 || wan0RealstateVal=0
+    current="$(nvram_get_val wan0_realstate)"
+    if [ "${current}" != "${wan0RealstateVal}" ] ; then
+      log_debug "Setting NVRAM wan0_realstate=${wan0RealstateVal} (was ${current})"
+      nvram_set_val wan0_realstate "${wan0RealstateVal}"
     fi
+  fi
 
-    current="$(nvram_get_val "${varName}")"
-    if [ "${current}" != "${value}" ] ; then
-      log_debug "Setting NVRAM ${varName}=${value} (was ${current})"
-      nvram_set_val "${varName}" "${value}"
-      needCommit=1
+  # ---- wanduck_state: 1=active, 0=inactive ----
+  if [ "${MANAGE_WANDUCK_STATE}" = "true" ] ; then
+    local wanduckStateVal; [ "${targetState}" = "UP" ] && wanduckStateVal=1 || wanduckStateVal=0
+    current="$(nvram_get_val wanduck_state)"
+    if [ "${current}" != "${wanduckStateVal}" ] ; then
+      log_debug "Setting NVRAM wanduck_state=${wanduckStateVal} (was ${current})"
+      nvram_set_val wanduck_state "${wanduckStateVal}"
     fi
-  done
+  fi
 
-  if [ "${needCommit}" -eq 1 ] ; then
-    log_debug "Committing NVRAM changes"
-    nvram_commit
+  # ---- wan0_auxstate: 0=no error, 2=no response from ISP ----
+  if [ "${MANAGE_WAN0_AUXSTATE}" = "true" ] ; then
+    local wan0AuxstateVal; [ "${targetState}" = "UP" ] && wan0AuxstateVal=0 || wan0AuxstateVal=2
+    current="$(nvram_get_val wan0_auxstate)"
+    if [ "${current}" != "${wan0AuxstateVal}" ] ; then
+      log_debug "Setting NVRAM wan0_auxstate=${wan0AuxstateVal} (was ${current})"
+      nvram_set_val wan0_auxstate "${wan0AuxstateVal}"
+    fi
   fi
 }
 
@@ -212,9 +287,88 @@ is_other_script_running() {
 # Connectivity check
 # ---------------------------------------------------------------------------
 
+# Returns 0 if any host in PING_TARGETS responds.
+_ping_check() {
+  for target in ${PING_TARGETS} ; do
+    if ping -c "${PING_COUNT}" -W "${PING_TIMEOUT}" "${target}" > /dev/null 2>&1 ; then
+      [ "${DRY_RUN}" = "true" ] && log_dryrun "Probe ping ${target}: OK"
+      return 0
+    fi
+    [ "${DRY_RUN}" = "true" ] && log_dryrun "Probe ping ${target}: FAIL"
+  done
+  return 1
+}
+
+# Returns 0 if any host in DNS_PROBE_HOSTS resolves.
+_dns_check() {
+  if [ -z "${DNS_PROBE_HOSTS}" ] ; then
+    return 1
+  fi
+  for host in ${DNS_PROBE_HOSTS} ; do
+    if nslookup "${host}" > /dev/null 2>&1 ; then
+      [ "${DRY_RUN}" = "true" ] && log_dryrun "Probe dns ${host}: OK"
+      return 0
+    fi
+    [ "${DRY_RUN}" = "true" ] && log_dryrun "Probe dns ${host}: FAIL"
+  done
+  return 1
+}
+
+# Returns 0 (WAN considered UP) according to PROBE_MODE:
+#   ping  — ICMP ping only (default)
+#   dns   — DNS lookup only
+#   any   — pass if ping OR DNS succeeds
+#   all   — pass only if BOTH ping AND DNS succeed
 wan_is_up() {
-  ping -c "${PING_COUNT}" -W "${PING_TIMEOUT}" "${PING_TARGET}" > /dev/null 2>&1
+  case "${PROBE_MODE}" in
+    dns)
+      _dns_check
+      ;;
+    any)
+      _ping_check || _dns_check
+      ;;
+    all)
+      _ping_check && _dns_check
+      ;;
+    ping|*)
+      _ping_check
+      ;;
+  esac
   return $?
+}
+
+# ---------------------------------------------------------------------------
+# WAN restart helper
+# ---------------------------------------------------------------------------
+
+# Triggers RESTART_WAN_CMD once per RESTART_COOLDOWN window when RESTART_WAN
+# is "true" and the outage has exceeded the DOWN threshold.
+maybe_restart_wan() {
+  [ "${RESTART_WAN}" = "true" ] || return 0
+
+  local now last elapsed
+  now="$(date '+%s')"
+  last=""
+  if [ -f "${RESTART_FILE}" ] ; then
+    last="$(cat "${RESTART_FILE}" 2>/dev/null)"
+  fi
+
+  if [ -n "${last}" ] ; then
+    elapsed=$(( now - last ))
+    if [ "${elapsed}" -lt "${RESTART_COOLDOWN}" ] ; then
+      log_info "WAN restart skipped — cooldown active (${elapsed}s of ${RESTART_COOLDOWN}s elapsed)."
+      return 0
+    fi
+  fi
+
+  if [ "${DRY_RUN}" = "true" ] ; then
+    log_dryrun "Would trigger WAN restart: ${RESTART_WAN_CMD}"
+    return 0
+  fi
+
+  log_warn "Triggering WAN restart: ${RESTART_WAN_CMD}"
+  echo "${now}" > "${RESTART_FILE}"
+  ${RESTART_WAN_CMD}
 }
 
 # ---------------------------------------------------------------------------
@@ -274,7 +428,9 @@ main() {
   trap 'release_lock' EXIT INT TERM
 
   log_debug "=== WanMoth starting (PID $$) ==="
-  log_debug "Target: ${PING_TARGET}, NVRAM vars: ${NVRAM_VAR}, ${NVRAM_VAR2}, UP=${STATE_UP}, DOWN=${STATE_DOWN}"
+  log_debug "Ping targets: ${PING_TARGETS}, DNS targets: ${DNS_PROBE_HOSTS:-none}, probe=${PROBE_MODE}"
+  [ "${DRY_RUN}" = "true" ] && log_info "[DRY-RUN] mode active — no NVRAM writes or WAN restarts will occur."
+  [ "${DRY_RUN}" = "true" ] && log_dryrun_context
 
   if wan_is_up ; then
     # ----- WAN is UP on entry -----
@@ -283,21 +439,21 @@ main() {
     set_nvram_state UP
   else
     # ----- WAN appears DOWN -----
-    log_warn "WAN DOWN — entering fast-polling loop (interval=${FAST_POLL_INTERVAL}s, threshold=${DOWN_THRESHOLD}s)."
+    if [ "${DRY_RUN}" = "true" ] ; then
+      log_warn "WAN DOWN (dry-run mode — single probe pass, threshold=${DOWN_THRESHOLD}s)."
+    else
+      log_warn "WAN DOWN — entering fast-polling loop (interval=${FAST_POLL_INTERVAL}s, threshold=${DOWN_THRESHOLD}s)."
+    fi
     record_down_start
 
-    while true ; do
-      if wan_is_up ; then
-        log_info "WAN recovered."
-        clear_down_start
-        set_nvram_state UP
-        break
-      fi
-
-      # Still down — check threshold
+    if [ "${DRY_RUN}" = "true" ] ; then
+      # Dry-run / cron mode: do one pass, log what would happen, then exit.
+      # Relies on STATE_FILE persisting across cron invocations to accumulate
+      # elapsed time; the threshold is crossed on a later cron tick.
       if down_threshold_exceeded ; then
-        log_warn "Outage exceeded ${DOWN_THRESHOLD}s threshold. Committing DOWN state to NVRAM."
+        log_warn "[DRY-RUN] Outage exceeds ${DOWN_THRESHOLD}s threshold — would commit DOWN state to NVRAM."
         set_nvram_state DOWN
+        maybe_restart_wan
       else
         local start elapsed remaining
         start="$(down_start_epoch)"
@@ -305,9 +461,31 @@ main() {
         remaining=$(( DOWN_THRESHOLD - elapsed ))
         log_debug "Still down (${elapsed}s elapsed, ${remaining}s until NVRAM commit)."
       fi
+    else
+      while true ; do
+        if wan_is_up ; then
+          log_info "WAN recovered."
+          clear_down_start
+          set_nvram_state UP
+          break
+        fi
 
-      sleep "${FAST_POLL_INTERVAL}"
-    done
+        # Still down — check threshold
+        if down_threshold_exceeded ; then
+          log_warn "Outage exceeded ${DOWN_THRESHOLD}s threshold. Committing DOWN state to NVRAM."
+          set_nvram_state DOWN
+          maybe_restart_wan
+        else
+          local start elapsed remaining
+          start="$(down_start_epoch)"
+          elapsed=$(( $(date '+%s') - start ))
+          remaining=$(( DOWN_THRESHOLD - elapsed ))
+          log_debug "Still down (${elapsed}s elapsed, ${remaining}s until NVRAM commit)."
+        fi
+
+        sleep "${FAST_POLL_INTERVAL}"
+      done
+    fi
   fi
 
   log_debug "=== WanMoth done ==="

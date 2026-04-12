@@ -150,6 +150,31 @@ done
 printf '[%s] %s: %s\n' "\$_prio" "\$_tag" "\$*" >> "\${LOG_FILE:-${td}/wanmoth.log}"
 STUB
   chmod +x "${td}/bin/logger"
+
+  # service stub — records each invocation to SERVICE_LOG for test assertions.
+  cat > "${td}/bin/service" << STUB
+#!/bin/sh
+printf '%s\n' "\$*" >> "\${SERVICE_LOG:-${td}/service.log}"
+exit 0
+STUB
+  chmod +x "${td}/bin/service"
+
+  # nslookup stub — exit code is consumed from ${td}/nslookup_seq (one per line)
+  # if that file exists; otherwise read from ${td}/nslookup_rc (default 0).
+  cat > "${td}/bin/nslookup" << STUB
+#!/bin/sh
+seq="${td}/nslookup_seq"
+if [ -f "\$seq" ]; then
+  rc=\$(head -1 "\$seq")
+  tail -n +2 "\$seq" > "\${seq}.tmp" && mv "\${seq}.tmp" "\$seq"
+  exit "\${rc:-0}"
+fi
+rc_file="${td}/nslookup_rc"
+rc=0
+if [ -f "\$rc_file" ]; then rc=\$(cat "\$rc_file"); fi
+exit "\${rc:-0}"
+STUB
+  chmod +x "${td}/bin/nslookup"
 }
 
 nvram_val() { grep "^${2}=" "${1}/nvram_store/vars" 2>/dev/null | cut -d= -f2- || true; }
@@ -159,11 +184,11 @@ run() {
   (
     export PATH="${td}/bin:$PATH"
     export LOG_FILE="${td}/wanmoth.log"
+    export SERVICE_LOG="${td}/service.log"
     export LOCK_FILE="${td}/wanmoth.lock"
     export STATE_FILE="${td}/wanmoth_down_since"
-    export PING_TARGET=8.8.8.8
-    export NVRAM_VAR=wanduck_state
-    export STATE_UP=2 STATE_DOWN=0
+    export RESTART_FILE="${td}/wanmoth_last_restart"
+    export PING_TARGETS=8.8.8.8
     export DOWN_THRESHOLD=30 FAST_POLL_INTERVAL=5
     # Allow callers to pass "VAR=value" pairs as extra arguments
     for kv in "$@"; do
@@ -183,8 +208,10 @@ echo "=== Test 1: WAN UP on entry ==="
 T="$(mktemp -d)"
 make_stubs "$T" "0" "1000"
 run "$T"
-assert_equals     "wanduck_state=2"   "2" "$(nvram_val "$T" wanduck_state)"
+assert_equals     "wanduck_state=1"   "1" "$(nvram_val "$T" wanduck_state)"
 assert_equals     "link_internet=2"   "2" "$(nvram_val "$T" link_internet)"
+assert_equals     "wan0_state=2"      "2" "$(nvram_val "$T" wan0_state)"
+assert_equals     "wan0_realstate=2"  "2" "$(nvram_val "$T" wan0_realstate)"
 assert_log_contains "log: WAN UP"     "WAN UP"   "${T}/wanmoth.log"
 assert_file_absent  "lock removed"    "${T}/wanmoth.lock"
 rm -rf "$T"
@@ -199,38 +226,41 @@ echo "=== Test 2: WAN down then quick recovery ==="
 T="$(mktemp -d)"
 make_stubs "$T" "$(printf '1\n0')" "$(printf '1000\n1010\n1010')"
 run "$T"
-assert_equals       "wanduck_state=2 (UP)"    "2"   "$(nvram_val "$T" wanduck_state)"
+assert_equals       "wanduck_state=1 (UP)"    "1"   "$(nvram_val "$T" wanduck_state)"
 assert_log_contains "log: WAN recovered"      "WAN recovered"        "${T}/wanmoth.log"
 assert_file_absent  "down_since file cleared" "${T}/wanmoth_down_since"
 rm -rf "$T"
 
 # =============================================================================
-# Test 3: WAN DOWN beyond threshold → STATE_DOWN committed, then UP on recovery
+# Test 3: WAN DOWN beyond threshold → STATE_DOWN written, then UP on recovery
 #         ping: fail, fail, fail, succeed
 #         epoch: 1000 (start), 1040 (>30s — threshold exceeded), 1040, 1040
 # =============================================================================
 echo ""
-echo "=== Test 3: WAN down beyond threshold → DOWN committed ==="
+echo "=== Test 3: WAN down beyond threshold → DOWN written to NVRAM ==="
 T="$(mktemp -d)"
 make_stubs "$T" "$(printf '1\n1\n1\n0')" "$(printf '1000\n1040\n1040\n1040\n1040')"
 run "$T"
 assert_log_contains "log: threshold exceeded"  "Outage exceeded"  "${T}/wanmoth.log"
 assert_log_contains "log: WAN recovered"       "WAN recovered"    "${T}/wanmoth.log"
-assert_equals       "wanduck_state=2 after recovery" "2" "$(nvram_val "$T" wanduck_state)"
+assert_equals       "wanduck_state=1 after recovery" "1" "$(nvram_val "$T" wanduck_state)"
 assert_equals       "link_internet=2 after recovery" "2" "$(nvram_val "$T" link_internet)"
 rm -rf "$T"
 
 # =============================================================================
-# Test 4: EXTRA_NVRAM_VARS — additional variables are synced on WAN UP
+# Test 4: MANAGE_WAN0_AUXSTATE=true — wan0_auxstate committed after threshold
+#         and cleared back to 0 (no error) on recovery.
+#         ping: fail x3, then succeed
+#         epoch: 1000 (start), 1040 (>30 — threshold), 1040, 1040, 1040
 # =============================================================================
 echo ""
-echo "=== Test 4: Extra NVRAM variables synced ==="
+echo "=== Test 4: MANAGE_WAN0_AUXSTATE=true sets wan0_auxstate ==="
 T="$(mktemp -d)"
-make_stubs "$T" "0" "1000"
-run "$T" \
-  "EXTRA_NVRAM_VARS=wan0_state_t:2:0 custom_flag:1:0"
-assert_equals "wan0_state_t=2"  "2" "$(nvram_val "$T" wan0_state_t)"
-assert_equals "custom_flag=1"   "1" "$(nvram_val "$T" custom_flag)"
+make_stubs "$T" "$(printf '1\n1\n1\n0')" "$(printf '1000\n1040\n1040\n1040\n1040')"
+run "$T" "MANAGE_WAN0_AUXSTATE=true"
+assert_log_contains "log: threshold exceeded" "Outage exceeded"  "${T}/wanmoth.log"
+assert_log_contains "log: WAN recovered"      "WAN recovered"    "${T}/wanmoth.log"
+assert_equals "wan0_auxstate=0 after recovery" "0" "$(nvram_val "$T" wan0_auxstate)"
 rm -rf "$T"
 
 # =============================================================================
@@ -256,9 +286,199 @@ make_stubs "$T" "0" "1000"
 echo "1234" > "${T}/pidof_wanduck"   # simulate wanduck PID
 run "$T" || true
 assert_log_contains "log: wanduck running" \
-  "wanduck daemon is running" "${T}/wanmoth.log"
+  "Daemon wanduck is still running" "${T}/wanmoth.log"
 # wanduck_state must NOT be written (no nvram activity expected)
 assert_equals "wanduck_state not written" "" "$(nvram_val "$T" wanduck_state)"
+rm -rf "$T"
+
+# =============================================================================
+# Test 7: RESTART_WAN=true — service restart_wan_if called when threshold exceeded
+#         ping: fail x3, then succeed
+#         epoch: 1000 (start), 1040 (>30 — threshold), 1040, 1040, 1040
+# =============================================================================
+echo ""
+echo "=== Test 7: RESTART_WAN=true triggers service restart ==="
+T="$(mktemp -d)"
+make_stubs "$T" "$(printf '1\n1\n1\n0')" "$(printf '1000\n1040\n1040\n1040\n1040\n1040')"
+run "$T" \
+  "RESTART_WAN=true" \
+  "RESTART_WAN_CMD=service restart_wan_if 0" \
+  "RESTART_COOLDOWN=300"
+assert_log_contains    "log: restart triggered"     "Triggering WAN restart" "${T}/wanmoth.log"
+assert_log_contains    "service log: restart called" "restart_wan_if 0"       "${T}/service.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 8: Multi-target probe — first target fails, second succeeds → WAN UP
+#         Two ping calls: first returns 1, second returns 0
+# =============================================================================
+echo ""
+echo "=== Test 8: Multi-target probe — first fails, second succeeds ==="
+T="$(mktemp -d)"
+make_stubs "$T" "$(printf '1\n0')" "1000"
+run "$T" \
+  "PING_TARGETS=192.0.2.1 1.0.0.1"
+assert_equals       "wanduck_state=1 (UP)" "1" "$(nvram_val "$T" wanduck_state)"
+assert_log_contains "log: WAN UP"          "WAN UP" "${T}/wanmoth.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 9: Restart cooldown — second call within RESTART_COOLDOWN does NOT restart
+#         First call sets RESTART_FILE at epoch 1000; second call at epoch 1050
+#         with RESTART_COOLDOWN=300 should skip restart.
+# =============================================================================
+echo ""
+echo "=== Test 9: Restart cooldown suppresses duplicate restart ==="
+T="$(mktemp -d)"
+# First invocation: WAN goes down and exceeds threshold, restart fires
+make_stubs "$T" "$(printf '1\n1\n1\n0')" "$(printf '1000\n1040\n1040\n1040\n1040\n1040')"
+run "$T" \
+  "RESTART_WAN=true" \
+  "RESTART_WAN_CMD=service restart_wan_if 0" \
+  "RESTART_COOLDOWN=300"
+assert_log_contains "first restart fired" "restart_wan_if 0" "${T}/service.log"
+# Second invocation at epoch 1050 — only 50s since last restart (< 300s cooldown)
+# Reset ping_seq and date_seq for the second run
+printf '1\n1\n1\n0\n' > "${T}/ping_seq"
+printf '1050\n1090\n1090\n1090\n1090\n1090\n' > "${T}/date_seq"
+run "$T" \
+  "RESTART_WAN=true" \
+  "RESTART_WAN_CMD=service restart_wan_if 0" \
+  "RESTART_COOLDOWN=300"
+restart_count="$(grep -c "restart_wan_if" "${T}/service.log" 2>/dev/null || echo 0)"
+assert_equals "second restart suppressed by cooldown" "1" "${restart_count}"
+assert_log_contains "log: cooldown message" "cooldown active" "${T}/wanmoth.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 10: DNS probe mode — PROBE_MODE=dns with a succeeding nslookup stub
+# =============================================================================
+echo ""
+echo "=== Test 10: DNS probe mode — nslookup succeeds → WAN UP ==="
+T="$(mktemp -d)"
+make_stubs "$T" "1" "1000"   # ping always fails; nslookup will succeed
+# nslookup_rc defaults to 0 (success) in the stub — no file needed
+run "$T" \
+  "PROBE_MODE=dns" \
+  "DNS_PROBE_HOSTS=connectivity-check.example.com"
+assert_equals       "wanduck_state=1 (UP via DNS)" "1" "$(nvram_val "$T" wanduck_state)"
+assert_log_contains "log: WAN UP via DNS"           "WAN UP" "${T}/wanmoth.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 11: Default MANAGE_* settings — all four named NVRAM variables are set
+#          to their correct UP values with no overrides.
+# =============================================================================
+echo ""
+echo "=== Test 11: Default MANAGE_* settings set all named NVRAM variables ==="
+T="$(mktemp -d)"
+make_stubs "$T" "0" "1000"
+run "$T"
+assert_equals "link_internet=2 (UP)"        "2" "$(nvram_val "$T" link_internet)"
+assert_equals "wan0_state=2 (UP)"           "2" "$(nvram_val "$T" wan0_state)"
+assert_equals "wan0_realstate=2 (UP)"       "2" "$(nvram_val "$T" wan0_realstate)"
+assert_equals "wanduck_state=1 (active)"    "1" "$(nvram_val "$T" wanduck_state)"
+assert_equals "wan0_auxstate not written"   ""  "$(nvram_val "$T" wan0_auxstate)"
+rm -rf "$T"
+
+# =============================================================================
+# Test 12: DNS multi-host probe — first host fails, second succeeds → WAN UP
+#          Uses DNS_PROBE_HOSTS (new variable, space-separated list).
+# =============================================================================
+echo ""
+echo "=== Test 12: DNS multi-host probe — first fails, second succeeds ==="
+T="$(mktemp -d)"
+make_stubs "$T" "1" "1000"   # ping always fails; nslookup will use sequence
+printf '1\n0\n' > "${T}/nslookup_seq"   # first DNS host fails, second succeeds
+run "$T" \
+  "PROBE_MODE=dns" \
+  "DNS_PROBE_HOSTS=fail.example.com ok.example.com"
+assert_equals       "wanduck_state=1 (UP via DNS multi-host)" "1" "$(nvram_val "$T" wanduck_state)"
+assert_log_contains "log: WAN UP"                              "WAN UP" "${T}/wanmoth.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 13: DRY_RUN=true, WAN UP — NVRAM not written, dry-run log emitted
+#          In dry-run mode nvram_set_val must log rather than write.
+# =============================================================================
+echo ""
+echo "=== Test 13: DRY_RUN=true, WAN UP — NVRAM skipped, dry-run log written ==="
+T="$(mktemp -d)"
+make_stubs "$T" "0" "1000"
+run "$T" \
+  "DRY_RUN=true" \
+  "DRY_RUN_LOG=${T}/wanmoth_dryrun.log"
+assert_equals       "wanduck_state not written (dry-run)" "" "$(nvram_val "$T" wanduck_state)"
+assert_equals       "link_internet not written (dry-run)" "" "$(nvram_val "$T" link_internet)"
+assert_log_contains "log: DRY-RUN mode active"            "\[DRY-RUN\] mode active"     "${T}/wanmoth.log"
+assert_log_contains "log: would set wanduck_state=1"      "Would set NVRAM wanduck_state=1" "${T}/wanmoth.log"
+assert_log_contains "dryrun file: would set wanduck_state" "Would set NVRAM wanduck_state=1" "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: probe config banner"    "probe config:"          "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: NVRAM state banner"     "NVRAM state:"           "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: ping probe result OK"   "Probe ping.*OK"         "${T}/wanmoth_dryrun.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 14: DRY_RUN=true, WAN DOWN, threshold exceeded — no NVRAM write,
+#          no polling loop; logs "would commit DOWN" and dry-run restart skip.
+#          ping: fail (1)
+#          epoch: 1000 (record_down_start), 1040 (down_threshold_exceeded; >30s)
+# =============================================================================
+echo ""
+echo "=== Test 14: DRY_RUN=true, WAN DOWN, threshold exceeded — exits after one pass ==="
+T="$(mktemp -d)"
+make_stubs "$T" "1" "$(printf '1000\n1040')"
+run "$T" \
+  "DRY_RUN=true" \
+  "DRY_RUN_LOG=${T}/wanmoth_dryrun.log" \
+  "RESTART_WAN=true" \
+  "RESTART_WAN_CMD=service restart_wan_if 0" \
+  "RESTART_COOLDOWN=300"
+assert_equals       "wanduck_state not written (dry-run DOWN)" "" "$(nvram_val "$T" wanduck_state)"
+assert_log_contains "log: WAN DOWN dry-run"       "dry-run mode" "${T}/wanmoth.log"
+assert_log_contains "log: would commit DOWN"      "\[DRY-RUN\] Outage exceeds" "${T}/wanmoth.log"
+assert_log_contains "log: would set wanduck_state=0" "Would set NVRAM wanduck_state=0" "${T}/wanmoth.log"
+assert_log_contains "log: would trigger restart"  "Would trigger WAN restart" "${T}/wanmoth.log"
+assert_log_contains "dryrun file: would set wanduck_state" "Would set NVRAM wanduck_state=0" "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: probe config banner"     "probe config:"          "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: NVRAM state banner"      "NVRAM state:"           "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: ping probe result FAIL"  "Probe ping.*FAIL"       "${T}/wanmoth_dryrun.log"
+assert_file_absent  "service NOT called (dry-run)" "${T}/service.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 15: PROBE_MODE=all — ping AND DNS both pass → WAN UP
+# =============================================================================
+echo ""
+echo "=== Test 15: PROBE_MODE=all — ping OK, DNS OK → WAN UP ==="
+T="$(mktemp -d)"
+make_stubs "$T" "0" "1000"   # ping succeeds; nslookup succeeds (default rc=0)
+run "$T" \
+  "PROBE_MODE=all" \
+  "DNS_PROBE_HOSTS=dns.google"
+assert_equals       "wanduck_state=1 (all: both pass)" "1" "$(nvram_val "$T" wanduck_state)"
+assert_log_contains "log: WAN UP (all mode)"            "WAN UP" "${T}/wanmoth.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 16: PROBE_MODE=all — ping passes but DNS fails → WAN DOWN (dry-run pass)
+#          ping: succeed; DNS: fail
+#          epoch: 1000 (record_down_start), 1040 (threshold exceeded >30s)
+# =============================================================================
+echo ""
+echo "=== Test 16: PROBE_MODE=all — ping OK but DNS FAIL → WAN DOWN ==="
+T="$(mktemp -d)"
+make_stubs "$T" "0" "$(printf '1000\n1040')"
+echo "1" > "${T}/nslookup_rc"   # nslookup always fails
+run "$T" \
+  "PROBE_MODE=all" \
+  "DNS_PROBE_HOSTS=dns.google" \
+  "DRY_RUN=true" \
+  "DRY_RUN_LOG=${T}/wanmoth_dryrun.log"
+assert_log_contains "log: would commit DOWN (all mode)" "\[DRY-RUN\] Outage exceeds" "${T}/wanmoth.log"
+assert_equals       "wanduck_state not written (dry-run)" "" "$(nvram_val "$T" wanduck_state)"
+assert_log_contains "dryrun file: ping OK in all mode"   "Probe ping.*OK"  "${T}/wanmoth_dryrun.log"
+assert_log_contains "dryrun file: dns FAIL in all mode"  "Probe dns.*FAIL" "${T}/wanmoth_dryrun.log"
 rm -rf "$T"
 
 # =============================================================================
