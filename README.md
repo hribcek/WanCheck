@@ -24,7 +24,7 @@ accurately reflecting the WAN status in the router's in-memory NVRAM store.
 | **Flash-safe NVRAM writes** | Uses `nvram set` only — never `nvram commit` — so no flash sectors are written during normal operation, avoiding wear and corruption risk |
 | **Fast-polling during outages** | Switches to a tight check loop (default every 10 s) so recovery is detected and NVRAM is restored quickly |
 | **Multi-target probe** | `PING_TARGETS` accepts a space-separated list; WAN is considered UP as soon as any target responds |
-| **DNS probe support** | `DNS_PROBE_HOSTS` accepts a space-separated list of hostnames; set `PROBE_MODE=dns` (or `any`) to use DNS lookups alongside or instead of ICMP pings |
+| **DNS probe support** | `DNS_PROBE_HOSTS` accepts a space-separated list of hostnames; set `PROBE_MODE=dns`, `any`, or `all` to use DNS lookups alongside or instead of ICMP pings |
 | **WAN restart trigger** | `RESTART_WAN=true` calls `service restart_wan_if 0` when a confirmed outage exceeds the threshold, with a configurable cooldown to prevent back-to-back resets — **disabled by default** (see Configuration) |
 | **Correct NVRAM semantics** | Manages `link_internet` (2/1), `wan0_state` (2/3), `wan0_realstate` (2/0), `wanduck_state` (1/0), and optionally `wan0_auxstate` (0/2) with hardcoded values the WebUI actually expects |
 | **wanduck awareness** | Detects if the `wanduck` daemon is running and defers to it, avoiding conflicting NVRAM writes |
@@ -101,13 +101,11 @@ integrity.
 
 | Variable | Default | Description |
 |---|---|---|
-| `PING_TARGETS` | *(empty — falls back to `PING_TARGET`)* | Space-separated list of IPs/hostnames to ping; WAN is UP if **any** responds |
-| `PING_TARGET` | `1.0.0.1` | Deprecated single-target fallback when `PING_TARGETS` is unset |
+| `PING_TARGETS` | `1.0.0.1 8.8.4.4` | Space-separated list of IPs/hostnames to ping; WAN is UP if **any** responds |
 | `PING_COUNT` | `3` | ICMP packets sent per target per check |
 | `PING_TIMEOUT` | `3` | Seconds to wait per packet |
-| `DNS_PROBE_HOSTS` | *(empty — disabled)* | Space-separated list of hostnames to resolve; WAN is UP if **any** resolves |
-| `DNS_PROBE_HOST` | *(empty)* | Deprecated single-host fallback when `DNS_PROBE_HOSTS` is unset |
-| `PROBE_MODE` | `ping` | Probe strategy: `ping`, `dns`, or `any` (pass if ping **or** DNS succeeds) |
+| `DNS_PROBE_HOSTS` | `dns.google one.one.one.one` | Space-separated list of hostnames to resolve; WAN is UP if **any** resolves |
+| `PROBE_MODE` | `ping` | Probe strategy: `ping`, `dns`, `any` (pass if ping **or** DNS succeeds), or `all` (pass only if ping **and** DNS both succeed) |
 
 ### Timing settings
 
@@ -169,7 +167,7 @@ cron (every N min)
               │
               ├─ acquire lock  (/tmp/wanmoth.lock)
               │
-              ├─ probe WAN (ping PING_TARGETS / DNS / any)
+              ├─ probe WAN (ping PING_TARGETS / DNS / any / all)
               │       │
               │       ├─ [success] ──► clear down-start timestamp
               │       │                set NVRAM → STATE_UP

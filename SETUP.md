@@ -56,15 +56,15 @@ WanMoth should be configured through environment variables passed at runtime. Av
 
 Common options include:
 
-- `PING_TARGET` to choose the connectivity test target
+- `PING_TARGETS` to choose the connectivity test targets (space-separated list)
 - `DOWN_THRESHOLD` to control how long an outage must persist before marking WAN down
 - `FAST_POLL_INTERVAL` to control retry timing during an outage
-- `EXTRA_NVRAM_VARS` to keep additional NVRAM values in sync
+- `PROBE_MODE` to switch between `ping`, `dns`, `any`, or `all` probe strategies
 
 Example manual run with overrides:
 
 ```bash
-PING_TARGET=1.1.1.1 DOWN_THRESHOLD=90 /jffs/scripts/wanmoth
+PING_TARGETS="1.1.1.1 8.8.8.8" DOWN_THRESHOLD=90 /jffs/scripts/wanmoth
 ```
 
 For persistent custom settings, use a wrapper or custom cron command that exports the desired variables before running `/jffs/scripts/wanmoth`.
