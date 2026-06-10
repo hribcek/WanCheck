@@ -70,6 +70,9 @@ sh install.sh
 ### 3 — Verify
 
 ```sh
+# Confirm which version is installed
+/jffs/scripts/wanmoth --version
+
 # Confirm cron entry
 cru l
 
@@ -113,6 +116,17 @@ integrity.
 |---|---|---|
 | `DOWN_THRESHOLD` | `60` | Seconds of continuous failure before DOWN is written to NVRAM |
 | `FAST_POLL_INTERVAL` | `10` | Seconds between checks in fast-polling (outage) mode |
+| `DOWN_LOG_BURST` | `2` | Number of initial fast-poll cycles that log the "Outage exceeded" line before throttling kicks in |
+| `DOWN_LOG_EVERY` | `5` | After the initial burst, log the "Outage exceeded" line only once every N fast-poll cycles. Set to `1` to log every cycle (no throttling) |
+
+> **Why throttle?** During a sustained outage the fast-polling loop runs every
+> `FAST_POLL_INTERVAL` seconds for the whole outage, which would otherwise emit
+> one "Outage exceeded" syslog line per cycle (hundreds of identical lines over
+> a long outage). NVRAM is still kept correct on every cycle — `set_nvram_state`
+> only writes when a value actually changes — so throttling affects logging
+> only, not state accuracy. With the defaults the line is logged on cycles
+> 1, 2, 5, 10, 15, … Raise `DOWN_LOG_EVERY` (e.g. `30` ≈ one line every 5 min at
+> the default interval) to make syslog quieter still.
 
 ### WAN restart settings
 

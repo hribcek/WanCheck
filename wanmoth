@@ -12,7 +12,7 @@
 # Cron schedule (normal): every 5 minutes via the Merlin cru helper
 #   cru a wanmoth "*/5 * * * * /jffs/scripts/wanmoth"
 #
-# During an outage the script enters a fast-polling loop and only commits
+# During an outage the script enters a fast-polling loop and only sets
 # a DOWN state to NVRAM after DOWN_THRESHOLD seconds have elapsed without
 # a successful probe, preventing false alarms from short transient blips.
 # If RESTART_WAN=true the script will also call RESTART_WAN_CMD once per
@@ -77,6 +77,16 @@ DOWN_THRESHOLD="${DOWN_THRESHOLD:-60}"
 # Seconds between connectivity checks while in fast-polling (outage) mode
 FAST_POLL_INTERVAL="${FAST_POLL_INTERVAL:-10}"
 
+# Syslog throttle for a sustained outage.  Once the DOWN threshold is exceeded
+# the fast-polling loop would otherwise log "still down" on every poll (i.e.
+# every FAST_POLL_INTERVAL seconds), flooding syslog during long outages.
+# Instead the message is logged for the first DOWN_LOG_BURST polls, then only
+# once every DOWN_LOG_EVERY polls thereafter.
+# Example with the defaults (burst=2, every=5): log on polls 1, 2, 5, 10, 15...
+# Set DOWN_LOG_EVERY=1 to log on every poll (disables throttling).
+DOWN_LOG_BURST="${DOWN_LOG_BURST:-2}"
+DOWN_LOG_EVERY="${DOWN_LOG_EVERY:-5}"
+
 # Set to "true" to trigger a firmware WAN restart when the DOWN threshold
 # is exceeded.
 #
@@ -116,6 +126,7 @@ DRY_RUN_LOG="${DRY_RUN_LOG:-/tmp/wanmoth_dryrun.log}"
 # ---------------------------------------------------------------------------
 otherScriptName="wanduck"  # If this process is running, defer to it and exit immediately
 scriptName="wanmoth"
+WANMOTH_VERSION="0.2.0"     # Keep in sync with CHANGELOG.md; logged at startup
 LOCK_FILE="${LOCK_FILE:-/tmp/${scriptName}.lock}"
 STATE_FILE="${STATE_FILE:-/tmp/${scriptName}_down_since}"
 RESTART_FILE="${RESTART_FILE:-/tmp/${scriptName}_last_restart}"
@@ -124,10 +135,10 @@ RESTART_FILE="${RESTART_FILE:-/tmp/${scriptName}_last_restart}"
 # Logging helpers — write to syslog via BusyBox logger
 # ---------------------------------------------------------------------------
 
-log_debug() { logger -t "${scriptName}" -p daemon.debug "$*"; }
-log_info()  { logger -t "${scriptName}" -p daemon.info  "$*"; }
-log_warn()  { logger -t "${scriptName}" -p daemon.warn  "$*"; }
-log_error() { logger -t "${scriptName}" -p daemon.err   "$*"; }
+log_debug() { logger -t "${scriptName}[$$]" -p daemon.debug "$*"; }
+log_info()  { logger -t "${scriptName}[$$]" -p daemon.info  "$*"; }
+log_warn()  { logger -t "${scriptName}[$$]" -p daemon.warn  "$*"; }
+log_error() { logger -t "${scriptName}[$$]" -p daemon.err   "$*"; }
 
 # log_dryrun: emit a "[DRY-RUN] would do X" entry to syslog (info) and,
 # when DRY_RUN_LOG is non-empty, append a timestamped line to that file.
@@ -412,11 +423,46 @@ down_threshold_exceeded() {
   fi
 }
 
+# Decide whether the "still down" message should be logged on this poll, given
+# the running count of consecutive past-threshold polls (1-based).  Logs for
+# the first DOWN_LOG_BURST polls, then only every DOWN_LOG_EVERY polls.
+# Returns 0 to log, 1 to skip.
+should_log_down() {
+  local count="$1"
+
+  # Always log the initial burst so an outage is visible immediately.
+  if [ "${count}" -le "${DOWN_LOG_BURST}" ] ; then
+    return 0
+  fi
+
+  # DOWN_LOG_EVERY <= 1 means "log every poll" (throttling disabled).
+  if [ "${DOWN_LOG_EVERY}" -le 1 ] ; then
+    return 0
+  fi
+
+  if [ $(( count % DOWN_LOG_EVERY )) -eq 0 ] ; then
+    return 0
+  fi
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Main logic
 # ---------------------------------------------------------------------------
 
 main() {
+  # Print version and exit — lets you confirm which build is installed/running:
+  #   /jffs/scripts/wanmoth --version
+  case "$1" in
+    -v|--version)
+      printf 'wanmoth %s\n' "${WANMOTH_VERSION}"
+      exit 0
+      ;;
+    *)
+      # No recognised flag — fall through to normal monitoring run.
+      ;;
+  esac
+
   # If the otherScriptName daemon is already running it manages WAN state natively.
   # Defer to it and exit immediately to avoid conflicting NVRAM writes.
   if is_other_script_running ; then
@@ -427,7 +473,7 @@ main() {
   acquire_lock
   trap 'release_lock' EXIT INT TERM
 
-  log_debug "=== WanMoth starting (PID $$) ==="
+  log_debug "=== WanMoth v${WANMOTH_VERSION} starting (PID $$) ==="
   log_debug "Ping targets: ${PING_TARGETS}, DNS targets: ${DNS_PROBE_HOSTS:-none}, probe=${PROBE_MODE}"
   [ "${DRY_RUN}" = "true" ] && log_info "[DRY-RUN] mode active — no NVRAM writes or WAN restarts will occur."
   [ "${DRY_RUN}" = "true" ] && log_dryrun_context
@@ -451,7 +497,7 @@ main() {
       # Relies on STATE_FILE persisting across cron invocations to accumulate
       # elapsed time; the threshold is crossed on a later cron tick.
       if down_threshold_exceeded ; then
-        log_warn "[DRY-RUN] Outage exceeds ${DOWN_THRESHOLD}s threshold — would commit DOWN state to NVRAM."
+        log_warn "[DRY-RUN] Outage exceeds ${DOWN_THRESHOLD}s threshold — would set DOWN state to NVRAM."
         set_nvram_state DOWN
         maybe_restart_wan
       else
@@ -459,9 +505,10 @@ main() {
         start="$(down_start_epoch)"
         elapsed=$(( $(date '+%s') - start ))
         remaining=$(( DOWN_THRESHOLD - elapsed ))
-        log_debug "Still down (${elapsed}s elapsed, ${remaining}s until NVRAM commit)."
+        log_debug "Still down (${elapsed}s elapsed, ${remaining}s until NVRAM is set)."
       fi
     else
+      local downCount=0
       while true ; do
         if wan_is_up ; then
           log_info "WAN recovered."
@@ -472,15 +519,21 @@ main() {
 
         # Still down — check threshold
         if down_threshold_exceeded ; then
-          log_warn "Outage exceeded ${DOWN_THRESHOLD}s threshold. Committing DOWN state to NVRAM."
+          # NVRAM is set on every poll (set_nvram_state only writes when the
+          # value actually changes) and maybe_restart_wan is cooldown-guarded;
+          # only the log line is throttled to keep syslog readable.
+          downCount=$(( downCount + 1 ))
           set_nvram_state DOWN
           maybe_restart_wan
+          if should_log_down "${downCount}" ; then
+            log_warn "Outage exceeded ${DOWN_THRESHOLD}s threshold. Setting DOWN state to NVRAM."
+          fi
         else
           local start elapsed remaining
           start="$(down_start_epoch)"
           elapsed=$(( $(date '+%s') - start ))
           remaining=$(( DOWN_THRESHOLD - elapsed ))
-          log_debug "Still down (${elapsed}s elapsed, ${remaining}s until NVRAM commit)."
+          log_debug "Still down (${elapsed}s elapsed, ${remaining}s until NVRAM is set)."
         fi
 
         sleep "${FAST_POLL_INTERVAL}"

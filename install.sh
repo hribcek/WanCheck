@@ -71,6 +71,12 @@ do_install() {
     die "${scriptName} not found at ${scriptSrc}"
   fi
 
+  # Report which build is being installed (the script is the single source of
+  # truth — '--version' exits before any monitoring side-effects).
+  local version
+  version="$(sh "${scriptSrc}" --version 2>/dev/null)" || version=""
+  [ -n "${version}" ] && info "Installing ${version}"
+
   # Build the command that cron will invoke.
   # When dry-run mode is requested, prefix DRY_RUN=true so the script logs
   # what it would do without writing NVRAM or restarting the WAN interface.
@@ -95,6 +101,7 @@ do_install() {
 
   info "Installation complete."
   info "  Script : ${installPath}"
+  [ -n "${version}" ] && info "  Version: ${version#wanmoth }"
   info "  Cron   : ${cronSchedule} (tag: ${cronTag})"
   [ "${dryRun}" = "true" ] && info "  Dry-run: yes — WAN state changes will be logged only"
 }

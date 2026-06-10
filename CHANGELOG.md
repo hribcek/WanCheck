@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-10
+
+### Added
+- `DOWN_LOG_BURST` (default `2`) and `DOWN_LOG_EVERY` (default `5`): syslog throttle for sustained outages. The fast-polling loop logs the "Outage exceeded" line for the first `DOWN_LOG_BURST` cycles, then only once every `DOWN_LOG_EVERY` cycles, preventing hundreds of identical lines during a long outage. Set `DOWN_LOG_EVERY=1` to log every cycle. NVRAM state is still updated on every cycle (writes only occur on change), so throttling affects logging only
+
+### Changed
+- Syslog tag now includes the PID — `wanmoth[<pid>]` — so concurrent or successive invocations can be told apart in `logread`
+- WAN-down log messages now say "set"/"Setting DOWN state to NVRAM" instead of "commit"/"Committing", reflecting that the script uses `nvram set` only and never `nvram commit`
+
 ## [0.1.0] - 2026-04-12
 
 ### Added

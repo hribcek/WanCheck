@@ -482,6 +482,58 @@ assert_log_contains "dryrun file: dns FAIL in all mode"  "Probe dns.*FAIL" "${T}
 rm -rf "$T"
 
 # =============================================================================
+# Test 17: Log throttle — sustained outage logs a burst then every Nth poll.
+#          12 past-threshold polls then recovery; DOWN_LOG_BURST=2 DOWN_LOG_EVERY=5
+#          → "Outage exceeded" logged on polls 1, 2, 5, 10 = 4 lines (not 12).
+#          ping: fail x12, then succeed
+#          epoch: 1000 (record start), then 1100 per poll (all > 30s threshold)
+# =============================================================================
+echo ""
+echo "=== Test 17: Log throttle limits 'Outage exceeded' lines during outage ==="
+T="$(mktemp -d)"
+# 12 failed polls then recovery; abundant epochs (1000 start + many 1100s, all
+# > 30s threshold) so the poll count is driven solely by the ping sequence.
+make_stubs "$T" \
+  "$(printf '1
+%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13; printf '0')" \
+  "$(printf '1000\n'; printf '1100\n%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)"
+run "$T" "DOWN_LOG_BURST=2" "DOWN_LOG_EVERY=5"
+down_log_count="$(grep -c "Outage exceeded" "${T}/wanmoth.log" 2>/dev/null || echo 0)"
+assert_equals       "throttled to burst(2) + every-5th (polls 1,2,5,10)" "4" "${down_log_count}"
+assert_log_contains "log: WAN recovered after throttled outage" "WAN recovered" "${T}/wanmoth.log"
+rm -rf "$T"
+
+# =============================================================================
+# Test 18: Log throttle disabled — DOWN_LOG_EVERY=1 logs on every poll.
+#          Same 12 past-threshold polls → 12 "Outage exceeded" lines.
+# =============================================================================
+echo ""
+echo "=== Test 18: DOWN_LOG_EVERY=1 disables throttle (logs every poll) ==="
+T="$(mktemp -d)"
+make_stubs "$T" \
+  "$(printf '1
+%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13; printf '0')" \
+  "$(printf '1000\n'; printf '1100\n%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)"
+run "$T" "DOWN_LOG_BURST=2" "DOWN_LOG_EVERY=1"
+down_log_count="$(grep -c "Outage exceeded" "${T}/wanmoth.log" 2>/dev/null || echo 0)"
+assert_equals "no throttle: one line per poll (12)" "12" "${down_log_count}"
+rm -rf "$T"
+
+# =============================================================================
+# Test 19: --version / -v prints the version and exits without monitoring.
+#          No stubs needed — the flag is handled before any probe/NVRAM work.
+# =============================================================================
+echo ""
+echo "=== Test 19: --version flag reports version and exits early ==="
+version_long="$(sh "$SCRIPT" --version 2>/dev/null)"
+version_short="$(sh "$SCRIPT" -v 2>/dev/null)"
+assert_equals "--version prints 'wanmoth 0.2.0'" "wanmoth 0.2.0" "${version_long}"
+assert_equals "-v is an alias for --version"     "wanmoth 0.2.0" "${version_short}"
+# Version line must match the latest CHANGELOG release heading so they stay in sync.
+changelog_version="$(grep -m1 '^## \[' "${TESTS_DIR}/../CHANGELOG.md" | sed 's/^## \[\([0-9.]*\)\].*/\1/')"
+assert_equals "script version matches CHANGELOG"  "${changelog_version}" "${version_long#wanmoth }"
+
+# =============================================================================
 # Summary
 # =============================================================================
 echo ""
