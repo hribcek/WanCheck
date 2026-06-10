@@ -28,9 +28,32 @@ Thank you for your interest in contributing to WanMoth! We welcome contributions
 - Add detailed explanation in the body if needed
 
 ### Testing
+- Run the test suite before opening a PR: `sh tests/test_wanmoth.sh` (all tests must pass)
+- Lint changed scripts: `shellcheck wanmoth install.sh tests/test_wanmoth.sh`
 - Test on multiple ASUS router models if possible
 - Verify scripts work with Merlin firmware
 - Document any router-specific requirements
+
+## Releasing
+
+This project uses [Semantic Versioning](https://semver.org/) and annotated git
+tags (`vMAJOR.MINOR.PATCH`). The version lives in two places that **must stay in
+sync** — `WANMOTH_VERSION` in [`wanmoth`](wanmoth) and the latest release heading
+in [`CHANGELOG.md`](CHANGELOG.md). Test 19 in the suite fails if they diverge.
+
+To cut a release (example: `0.3.0`):
+
+1. Bump `WANMOTH_VERSION="0.3.0"` in `wanmoth`.
+2. Add a `## [0.3.0] - YYYY-MM-DD` heading in `CHANGELOG.md` and move the
+   relevant notes under it (Added / Changed / Removed).
+3. Verify: `sh tests/test_wanmoth.sh` passes and `shellcheck wanmoth install.sh`
+   is clean. Confirm the script reports the new version: `sh wanmoth --version`.
+4. Commit (e.g. `chore: release v0.3.0`) and push `master`.
+5. Tag and push:
+   ```bash
+   git tag -a v0.3.0 -m "WanMoth 0.3.0 — <one-line summary>"
+   git push origin master --follow-tags
+   ```
 
 ## Code of Conduct
 
