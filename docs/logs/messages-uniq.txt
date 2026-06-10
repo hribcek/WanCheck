@@ -1,0 +1,7 @@
+    720 gateway wanmoth: [DRY-RUN] Probe ping 1.0.0.1: OK
+    720 gateway wanmoth: [DRY-RUN] Probe dns dns.google: OK
+    720 gateway wanmoth: [DRY-RUN] mode active — no NVRAM writes or WAN restarts will occur.
+    720 gateway wanmoth: [DRY-RUN] --- probe config: mode=all ping_targets=1.0.0.1 8.8.4.4 dns_targets=dns.google one.one.one.one ---
+    464 gateway wanmoth: [DRY-RUN] --- NVRAM state: link_internet=2 wan0_state=2 wan0_realstate=2 wanduck_state=1 wan0_auxstate= ---
+    256 gateway wanmoth: [DRY-RUN] Would set NVRAM link_internet=2
+    256 gateway wanmoth: [DRY-RUN] --- NVRAM state: link_internet=0 wan0_state=2 wan0_realstate=2 wanduck_state=1 wan0_auxstate= ---

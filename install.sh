@@ -8,7 +8,12 @@
 # survives reboots.
 #
 # Usage:
-#   sh install.sh [--uninstall]
+#   sh install.sh [--install] [--dry-run]
+#   sh install.sh --uninstall
+#
+#   --dry-run / -d   Install with DRY_RUN=true so wanmoth logs what it would
+#                    do without writing NVRAM or restarting the WAN interface.
+#                    Useful for observing behaviour before going live.
 #
 # Prerequisites:
 #   • JFFS2 partition enabled in the router admin UI
@@ -66,26 +71,38 @@ do_install() {
     die "${scriptName} not found at ${scriptSrc}"
   fi
 
+  # Build the command that cron will invoke.
+  # When dry-run mode is requested, prefix DRY_RUN=true so the script logs
+  # what it would do without writing NVRAM or restarting the WAN interface.
+  local cronCmd
+  if [ "${dryRun}" = "true" ]; then
+    cronCmd="DRY_RUN=true ${installPath}"
+  else
+    cronCmd="${installPath}"
+  fi
+
   info "Copying ${scriptName} -> ${installPath}"
   cp -f "${scriptSrc}" "${installPath}" || die "Failed to copy ${scriptName} to ${installPath}"
   chmod 755 "${installPath}" || die "Failed to set executable permissions on ${installPath}"
 
   # Register cron job using the Merlin 'cru' helper (persists via
   # /jffs/scripts/services-start which is sourced on every boot).
-  info "Adding cron job: ${cronSchedule} ${installPath}"
-  cru a "${cronTag}" "${cronSchedule} ${installPath}"
+  info "Adding cron job: ${cronSchedule} ${cronCmd}"
+  cru a "${cronTag}" "${cronSchedule} ${cronCmd}"
 
   # Persist the cron registration across reboots via services-start
-  _persist_cron
+  _persist_cron "${cronCmd}"
 
   info "Installation complete."
   info "  Script : ${installPath}"
   info "  Cron   : ${cronSchedule} (tag: ${cronTag})"
+  [ "${dryRun}" = "true" ] && info "  Dry-run: yes — WAN state changes will be logged only"
 }
 
 # Append the cru registration to services-start so it survives reboots.
 _persist_cron() {
-  local entry="cru a ${cronTag} \"${cronSchedule} ${installPath}\"  ${scriptTag}"
+  local cronCmd="$1"
+  local entry="cru a ${cronTag} \"${cronSchedule} ${cronCmd}\"  ${scriptTag}"
 
   if [ ! -f "${initScript}" ]; then
     info "Creating ${initScript}"
@@ -130,15 +147,23 @@ do_uninstall() {
 # Entry point
 # ---------------------------------------------------------------------------
 
-case "${1:-}" in
-  --uninstall|-u)
-    do_uninstall
-    ;;
-  ""|--install|-i)
-    do_install
-    ;;
-  *)
-    printf 'Usage: %s [--install | --uninstall]\n' "$0" >&2
-    exit 1
-    ;;
+dryRun=false
+action=install
+
+for arg in "$@"; do
+  case "${arg}" in
+    --dry-run|-d)   dryRun=true ;;
+    --uninstall|-u) action=uninstall ;;
+    --install|-i)   action=install ;;
+    *)
+      printf 'Usage: %s [--install] [--dry-run] | --uninstall\n' "$0" >&2
+      exit 1
+      ;;
+  esac
+done
+
+case "${action}" in
+  uninstall) do_uninstall ;;
+  install)   do_install ;;
+  *)         printf 'Internal error: unknown action "%s"\n' "${action}" >&2; exit 1 ;;
 esac
